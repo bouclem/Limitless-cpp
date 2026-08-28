@@ -8,9 +8,12 @@
 extern "C" {
 #endif
 
-// TODO: add F16, BF16, I8, I16, I32, I64, BOOL
+// TODO: add F16, I8, I16, I32, I64, BOOL
+typedef uint16_t lmlc_bf16_t;
+
 typedef enum {
     LMLC_DTYPE_F32 = 0,
+    LMLC_DTYPE_BF16,
     LMLC_DTYPE_COUNT
 } lmlc_dtype_t;
 
@@ -20,10 +23,13 @@ typedef struct {
     int64_t strides[8];  // element strides (not bytes)
     size_t  count;       // total number of elements
     lmlc_dtype_t dtype;
-    float  *data;        // TODO: void* for multi-dtype support
+    void   *data;
+    int    owns_data;    // 1 if this tensor owns the data buffer
 } lmlc_tensor_t;
 
-// TODO: tensor view (no ownership), tensor with offset
+// bf16 conversion
+lmlc_bf16_t lmlc_f32_to_bf16(float f);
+float       lmlc_bf16_to_f32(lmlc_bf16_t b);
 
 // create / free
 lmlc_tensor_t* lmlc_tensor_create(int ndim, const int64_t* shape, lmlc_dtype_t dtype);
@@ -35,19 +41,19 @@ void lmlc_tensor_fill(lmlc_tensor_t* t, float value);
 void lmlc_tensor_copy(const lmlc_tensor_t* src, lmlc_tensor_t* dst);
 
 // shape ops
-// TODO: lmlc_tensor_reshape
-// TODO: lmlc_tensor_transpose
-// TODO: lmlc_tensor_permute
-// TODO: lmlc_tensor_squeeze
-// TODO: lmlc_tensor_unsqueeze
-// TODO: lmlc_tensor_view
+void lmlc_tensor_reshape(lmlc_tensor_t* t, int ndim, const int64_t* shape);
+void lmlc_tensor_transpose(lmlc_tensor_t* t, int dim0, int dim1);
+void lmlc_tensor_permute(lmlc_tensor_t* t, const int* perm);
+void lmlc_tensor_squeeze(lmlc_tensor_t* t, int dim);
+void lmlc_tensor_unsqueeze(lmlc_tensor_t* t, int dim);
+lmlc_tensor_t* lmlc_tensor_view(lmlc_tensor_t* t, int ndim, const int64_t* shape);
 
 // element access
 float lmlc_tensor_get(const lmlc_tensor_t* t, const int64_t* indices);
 void  lmlc_tensor_set(lmlc_tensor_t* t, const int64_t* indices, float value);
 
 // math ops
-// TODO: lmlc_tensor_add
+void lmlc_tensor_add(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out);
 // TODO: lmlc_tensor_mul
 // TODO: lmlc_tensor_matmul
 // TODO: lmlc_tensor_scale

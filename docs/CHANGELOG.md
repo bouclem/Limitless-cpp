@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.0.2] - 2026-08-28
+
+### Added
+- **BF16 dtype** — `LMLC_DTYPE_BF16` with f32<->bf16 conversion functions
+  - `lmlc_f32_to_bf16` / `lmlc_bf16_to_f32`
+  - Tensor create, fill, get, set, copy, print all support BF16
+- **lmlc_tensor_add** — element-wise addition (F32 + BF16)
+- **Shape ops**:
+  - `lmlc_tensor_reshape` — in-place reshape (count must match)
+  - `lmlc_tensor_transpose` — swap two dimensions
+  - `lmlc_tensor_permute` — reorder dimensions by permutation
+  - `lmlc_tensor_squeeze` — remove a size-1 dimension
+  - `lmlc_tensor_unsqueeze` — insert a size-1 dimension
+  - `lmlc_tensor_view` — non-owning view with new shape
+
+### Changed
+- `float *data` → `void *data` in `lmlc_tensor_t` (multi-dtype support)
+- Added `owns_data` field to `lmlc_tensor_t` (views don't free data)
+- `lmlc_tensor_free` now checks `owns_data` before freeing
+
 ## [0.0.1] - 2026-08-28
 
 ### Added
