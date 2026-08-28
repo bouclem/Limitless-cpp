@@ -29,4 +29,4 @@ add_library(lmlc_graph STATIC
 target_include_directories(lmlc_graph PUBLIC src/LMLC/LMLC_Graph)
 target_link_libraries(lmlc_graph PUBLIC lmlc_tensor)
 
-add_subdirectory(src/LMLC/LMLC_Tensor/test)
+add_subdirectory(test)

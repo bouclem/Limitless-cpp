@@ -8,19 +8,25 @@
 extern "C" {
 #endif
 
-// TODO: add I8, I16, I32, I64
-
 #define LMLC_MAX_NDIM 32
 
 typedef uint16_t lmlc_bf16_t;
 typedef uint16_t lmlc_f16_t;
 typedef uint8_t  lmlc_bool_t;
+typedef int8_t   lmlc_i8_t;
+typedef int16_t  lmlc_i16_t;
+typedef int32_t  lmlc_i32_t;
+typedef int64_t  lmlc_i64_t;
 
 typedef enum {
     LMLC_DTYPE_F32 = 0,
     LMLC_DTYPE_BF16,
     LMLC_DTYPE_F16,
     LMLC_DTYPE_BOOL,
+    LMLC_DTYPE_I8,
+    LMLC_DTYPE_I16,
+    LMLC_DTYPE_I32,
+    LMLC_DTYPE_I64,
     LMLC_DTYPE_COUNT
 } lmlc_dtype_t;
 

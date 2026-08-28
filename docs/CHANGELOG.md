@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.1] - 2026-08-29
+
+### Added
+- **Integer dtypes** — I8, I16, I32, I64
+  - `lmlc_i8_t` (int8_t), `lmlc_i16_t` (int16_t), `lmlc_i32_t` (int32_t), `lmlc_i64_t` (int64_t)
+  - `LMLC_DTYPE_I8`, `LMLC_DTYPE_I16`, `LMLC_DTYPE_I32`, `LMLC_DTYPE_I64` enum values
+  - Full support in `dtype_size`, `tensor_get_flat`, `tensor_set_flat`, `lmlc_tensor_fill`
+  - Cross-dtype conversion works (int → f32 via float intermediate, like other dtypes)
+- **Tests** — 2 new test cases (28 total)
+  - `test_integer_dtypes` — fill + get for all 4 integer types
+  - `test_cross_dtype_int_to_f32` — I32 → F32 copy
+
+### Changed
+- Moved `test/` directory from `src/LMLC/LMLC_Tensor/test/` to root `test/`
+- Updated `CMakeLists.txt` `add_subdirectory` path
+
 ## [0.1.0] - 2026-08-29
 
 ### Added

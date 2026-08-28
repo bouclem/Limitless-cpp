@@ -516,6 +516,59 @@ static void test_graph_matmul(void) {
     END_TEST;
 }
 
+static void test_integer_dtypes(void) {
+    TEST("integer_dtypes");
+    int64_t shape[] = {4};
+
+    // I8
+    lmlc_tensor_t* t8 = lmlc_tensor_create(1, shape, LMLC_DTYPE_I8);
+    lmlc_tensor_fill(t8, -5.0f);
+    int64_t idx[] = {0};
+    ASSERT_F32(lmlc_tensor_get(t8, idx), -5.0f, 0.0f);
+    idx[0] = 3;
+    ASSERT_F32(lmlc_tensor_get(t8, idx), -5.0f, 0.0f);
+    lmlc_tensor_free(t8);
+
+    // I16
+    lmlc_tensor_t* t16 = lmlc_tensor_create(1, shape, LMLC_DTYPE_I16);
+    lmlc_tensor_fill(t16, 1000.0f);
+    idx[0] = 1;
+    ASSERT_F32(lmlc_tensor_get(t16, idx), 1000.0f, 0.0f);
+    lmlc_tensor_free(t16);
+
+    // I32
+    lmlc_tensor_t* t32 = lmlc_tensor_create(1, shape, LMLC_DTYPE_I32);
+    lmlc_tensor_fill(t32, 100000.0f);
+    idx[0] = 2;
+    ASSERT_F32(lmlc_tensor_get(t32, idx), 100000.0f, 0.0f);
+    lmlc_tensor_free(t32);
+
+    // I64
+    lmlc_tensor_t* t64 = lmlc_tensor_create(1, shape, LMLC_DTYPE_I64);
+    lmlc_tensor_fill(t64, 999999.0f);
+    idx[0] = 0;
+    ASSERT_F32(lmlc_tensor_get(t64, idx), 999999.0f, 0.0f);
+    lmlc_tensor_free(t64);
+    END_TEST;
+}
+
+static void test_cross_dtype_int_to_f32(void) {
+    TEST("cross_dtype_int_to_f32");
+    int64_t shape[] = {3};
+    lmlc_tensor_t* src = lmlc_tensor_create(1, shape, LMLC_DTYPE_I32);
+    lmlc_tensor_t* dst = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+
+    lmlc_tensor_fill(src, 42.0f);
+    lmlc_tensor_copy(src, dst);
+
+    int64_t idx[] = {1};
+    ASSERT_F32(lmlc_tensor_get(dst, idx), 42.0f, 0.0f);
+
+    lmlc_tensor_free(src);
+    lmlc_tensor_free(dst);
+    END_TEST;
+}
+
 int main(void) {
     printf("=== LMLC_Tensor Tests ===\n\n");
 
@@ -545,6 +598,8 @@ int main(void) {
     test_ndim_gt_8();
     test_graph_forward();
     test_graph_matmul();
+    test_integer_dtypes();
+    test_cross_dtype_int_to_f32();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

@@ -173,6 +173,10 @@ static float tensor_get_flat(const lmlc_tensor_t* t, size_t offset) {
     if (t->dtype == LMLC_DTYPE_BF16) return lmlc_bf16_to_f32(((lmlc_bf16_t*)t->data)[offset]);
     if (t->dtype == LMLC_DTYPE_F16)  return lmlc_f16_to_f32(((lmlc_f16_t*)t->data)[offset]);
     if (t->dtype == LMLC_DTYPE_BOOL) return (float)((lmlc_bool_t*)t->data)[offset];
+    if (t->dtype == LMLC_DTYPE_I8)   return (float)((lmlc_i8_t*)t->data)[offset];
+    if (t->dtype == LMLC_DTYPE_I16)  return (float)((lmlc_i16_t*)t->data)[offset];
+    if (t->dtype == LMLC_DTYPE_I32)  return (float)((lmlc_i32_t*)t->data)[offset];
+    if (t->dtype == LMLC_DTYPE_I64)  return (float)((lmlc_i64_t*)t->data)[offset];
     return ((float*)t->data)[offset];
 }
 
@@ -180,6 +184,10 @@ static void tensor_set_flat(lmlc_tensor_t* t, size_t offset, float val) {
     if (t->dtype == LMLC_DTYPE_BF16) { ((lmlc_bf16_t*)t->data)[offset] = lmlc_f32_to_bf16(val); return; }
     if (t->dtype == LMLC_DTYPE_F16)  { ((lmlc_f16_t*)t->data)[offset] = lmlc_f32_to_f16(val); return; }
     if (t->dtype == LMLC_DTYPE_BOOL) { ((lmlc_bool_t*)t->data)[offset] = (val != 0.0f) ? 1 : 0; return; }
+    if (t->dtype == LMLC_DTYPE_I8)   { ((lmlc_i8_t*)t->data)[offset] = (lmlc_i8_t)val; return; }
+    if (t->dtype == LMLC_DTYPE_I16)  { ((lmlc_i16_t*)t->data)[offset] = (lmlc_i16_t)val; return; }
+    if (t->dtype == LMLC_DTYPE_I32)  { ((lmlc_i32_t*)t->data)[offset] = (lmlc_i32_t)val; return; }
+    if (t->dtype == LMLC_DTYPE_I64)  { ((lmlc_i64_t*)t->data)[offset] = (lmlc_i64_t)val; return; }
     ((float*)t->data)[offset] = val;
 }
 
@@ -213,6 +221,10 @@ static size_t dtype_size(lmlc_dtype_t dtype) {
         case LMLC_DTYPE_BF16: return sizeof(lmlc_bf16_t);
         case LMLC_DTYPE_F16:  return sizeof(lmlc_f16_t);
         case LMLC_DTYPE_BOOL: return sizeof(lmlc_bool_t);
+        case LMLC_DTYPE_I8:   return sizeof(lmlc_i8_t);
+        case LMLC_DTYPE_I16:  return sizeof(lmlc_i16_t);
+        case LMLC_DTYPE_I32:  return sizeof(lmlc_i32_t);
+        case LMLC_DTYPE_I64:  return sizeof(lmlc_i64_t);
         default:              return sizeof(float);
     }
 }
@@ -306,6 +318,22 @@ void lmlc_tensor_fill(lmlc_tensor_t* t, float value) {
         lmlc_bool_t* data = (lmlc_bool_t*)t->data;
         lmlc_bool_t bv = (value != 0.0f) ? 1 : 0;
         memset(data, bv, t->count * sizeof(lmlc_bool_t));
+    } else if (t->dtype == LMLC_DTYPE_I8) {
+        lmlc_i8_t* data = (lmlc_i8_t*)t->data;
+        lmlc_i8_t iv = (lmlc_i8_t)value;
+        for (size_t i = 0; i < t->count; i++) data[i] = iv;
+    } else if (t->dtype == LMLC_DTYPE_I16) {
+        lmlc_i16_t* data = (lmlc_i16_t*)t->data;
+        lmlc_i16_t iv = (lmlc_i16_t)value;
+        for (size_t i = 0; i < t->count; i++) data[i] = iv;
+    } else if (t->dtype == LMLC_DTYPE_I32) {
+        lmlc_i32_t* data = (lmlc_i32_t*)t->data;
+        lmlc_i32_t iv = (lmlc_i32_t)value;
+        for (size_t i = 0; i < t->count; i++) data[i] = iv;
+    } else if (t->dtype == LMLC_DTYPE_I64) {
+        lmlc_i64_t* data = (lmlc_i64_t*)t->data;
+        lmlc_i64_t iv = (lmlc_i64_t)value;
+        for (size_t i = 0; i < t->count; i++) data[i] = iv;
     } else {
         float* data = (float*)t->data;
         for (size_t i = 0; i < t->count; i++) data[i] = value;
