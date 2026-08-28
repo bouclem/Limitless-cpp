@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.0.3] - 2026-08-28
+
+### Added
+- **F16 dtype** — `LMLC_DTYPE_F16` with IEEE 754 half-precision conversion
+  - `lmlc_f32_to_f16` / `lmlc_f16_to_f32` (round-to-nearest-even, subnormal support)
+  - Tensor create, fill, get, set, print all support F16
+- **Broadcasting** — NumPy-style broadcasting for element-wise ops
+  - Right-aligned dimension matching with size-1 expansion
+  - Used by `lmlc_tensor_add` and `lmlc_tensor_mul`
+- **Math ops**:
+  - `lmlc_tensor_mul` — element-wise multiply with broadcasting
+  - `lmlc_tensor_scale` — scalar multiplication
+  - `lmlc_tensor_matmul` — 2D matrix multiply (M×K · K×N → M×N)
+  - `lmlc_tensor_dot` — dot product (1D, same count)
+  - `lmlc_tensor_norm` — L2 norm (sqrt of sum of squares)
+
+### Changed
+- Refactored `lmlc_tensor_add` to use broadcasting (was same-shape only)
+- Refactored `lmlc_tensor_get` / `lmlc_tensor_set` to use internal `tensor_get_flat` / `tensor_set_flat` helpers
+- Added `<math.h>` include for `sqrtf`
+
 ## [0.0.2] - 2026-08-28
 
 ### Added

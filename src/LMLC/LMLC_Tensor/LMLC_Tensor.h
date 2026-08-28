@@ -8,12 +8,14 @@
 extern "C" {
 #endif
 
-// TODO: add F16, I8, I16, I32, I64, BOOL
+// TODO: add I8, I16, I32, I64, BOOL
 typedef uint16_t lmlc_bf16_t;
+typedef uint16_t lmlc_f16_t;
 
 typedef enum {
     LMLC_DTYPE_F32 = 0,
     LMLC_DTYPE_BF16,
+    LMLC_DTYPE_F16,
     LMLC_DTYPE_COUNT
 } lmlc_dtype_t;
 
@@ -30,6 +32,10 @@ typedef struct {
 // bf16 conversion
 lmlc_bf16_t lmlc_f32_to_bf16(float f);
 float       lmlc_bf16_to_f32(lmlc_bf16_t b);
+
+// f16 conversion
+lmlc_f16_t lmlc_f32_to_f16(float f);
+float      lmlc_f16_to_f32(lmlc_f16_t h);
 
 // create / free
 lmlc_tensor_t* lmlc_tensor_create(int ndim, const int64_t* shape, lmlc_dtype_t dtype);
@@ -53,12 +59,12 @@ float lmlc_tensor_get(const lmlc_tensor_t* t, const int64_t* indices);
 void  lmlc_tensor_set(lmlc_tensor_t* t, const int64_t* indices, float value);
 
 // math ops
-void lmlc_tensor_add(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out);
-// TODO: lmlc_tensor_mul
-// TODO: lmlc_tensor_matmul
-// TODO: lmlc_tensor_scale
-// TODO: lmlc_tensor_dot
-// TODO: lmlc_tensor_norm
+void  lmlc_tensor_add(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out);
+void  lmlc_tensor_mul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out);
+void  lmlc_tensor_scale(const lmlc_tensor_t* a, float scalar, lmlc_tensor_t* out);
+void  lmlc_tensor_matmul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out);
+float lmlc_tensor_dot(const lmlc_tensor_t* a, const lmlc_tensor_t* b);
+float lmlc_tensor_norm(const lmlc_tensor_t* t);
 
 // debug
 void lmlc_tensor_print(const lmlc_tensor_t* t);

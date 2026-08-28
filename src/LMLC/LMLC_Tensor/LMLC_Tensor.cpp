@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 // ---- bf16 conversion ----
 
@@ -20,6 +21,80 @@ float lmlc_bf16_to_f32(lmlc_bf16_t b) {
     return f;
 }
 
+// ---- f16 conversion ----
+
+lmlc_f16_t lmlc_f32_to_f16(float f) {
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    uint32_t sign = (u >> 16) & 0x8000;
+    int32_t  exp  = (u >> 23) & 0xFF;
+    uint32_t mant = u & 0x7FFFFF;
+
+    if (exp == 0xFF) {
+        // inf or nan
+        return (lmlc_f16_t)(sign | 0x7C00 | (mant ? 0x200 : 0));
+    }
+
+    exp = exp - 127 + 15;
+
+    if (exp >= 0x1F) {
+        // overflow -> inf
+        return (lmlc_f16_t)(sign | 0x7C00);
+    }
+
+    if (exp <= 0) {
+        if (exp < -10) return (lmlc_f16_t)sign;
+        // subnormal
+        mant |= 0x800000;
+        uint32_t shift = (uint32_t)(14 - exp);
+        uint32_t half  = 1u << (shift - 1);
+        uint32_t mask  = (1u << shift) - 1;
+        uint32_t rounded = mant >> shift;
+        if ((mant & mask) > half || ((mant & mask) == half && (rounded & 1)))
+            rounded++;
+        return (lmlc_f16_t)(sign | rounded);
+    }
+
+    // normal: round 23-bit mantissa to 10 bits
+    uint32_t shift = 13;
+    uint32_t half  = 1u << (shift - 1);
+    uint32_t mask  = (1u << shift) - 1;
+    uint32_t rounded = mant >> shift;
+    if ((mant & mask) > half || ((mant & mask) == half && (rounded & 1))) {
+        rounded++;
+        if (rounded == 0x400) { rounded = 0; exp++; }
+    }
+    if (exp >= 0x1F) return (lmlc_f16_t)(sign | 0x7C00);
+    return (lmlc_f16_t)(sign | ((uint32_t)exp << 10) | rounded);
+}
+
+float lmlc_f16_to_f32(lmlc_f16_t h) {
+    uint32_t sign = ((uint32_t)h & 0x8000) << 16;
+    int32_t  exp  = ((uint32_t)h >> 10) & 0x1F;
+    uint32_t mant = (uint32_t)h & 0x3FF;
+
+    if (exp == 0) {
+        if (mant == 0) {
+            uint32_t u = sign;
+            float f; memcpy(&f, &u, sizeof(f));
+            return f;
+        }
+        // subnormal -> normalize
+        while (!(mant & 0x400)) { mant <<= 1; exp--; }
+        exp++;
+        mant &= ~0x400u;
+    } else if (exp == 0x1F) {
+        // inf or nan
+        uint32_t u = sign | 0x7F800000 | (mant << 13);
+        float f; memcpy(&f, &u, sizeof(f));
+        return f;
+    }
+
+    uint32_t u = sign | ((uint32_t)(exp + 112) << 23) | (mant << 13);
+    float f; memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
 // ---- helpers ----
 
 static void compute_strides(lmlc_tensor_t* t) {
@@ -30,11 +105,48 @@ static void compute_strides(lmlc_tensor_t* t) {
     }
 }
 
+static float tensor_get_flat(const lmlc_tensor_t* t, size_t offset) {
+    if (t->dtype == LMLC_DTYPE_BF16) return lmlc_bf16_to_f32(((lmlc_bf16_t*)t->data)[offset]);
+    if (t->dtype == LMLC_DTYPE_F16)  return lmlc_f16_to_f32(((lmlc_f16_t*)t->data)[offset]);
+    return ((float*)t->data)[offset];
+}
+
+static void tensor_set_flat(lmlc_tensor_t* t, size_t offset, float val) {
+    if (t->dtype == LMLC_DTYPE_BF16) { ((lmlc_bf16_t*)t->data)[offset] = lmlc_f32_to_bf16(val); return; }
+    if (t->dtype == LMLC_DTYPE_F16)  { ((lmlc_f16_t*)t->data)[offset] = lmlc_f32_to_f16(val); return; }
+    ((float*)t->data)[offset] = val;
+}
+
+static int broadcast_shape(const lmlc_tensor_t* a, const lmlc_tensor_t* b,
+                           int* out_ndim, int64_t* out_shape) {
+    int max_ndim = a->ndim > b->ndim ? a->ndim : b->ndim;
+    for (int i = 0; i < max_ndim; i++) {
+        int64_t da = (i < max_ndim - a->ndim) ? 1 : a->shape[i - (max_ndim - a->ndim)];
+        int64_t db = (i < max_ndim - b->ndim) ? 1 : b->shape[i - (max_ndim - b->ndim)];
+        if (da != db && da != 1 && db != 1) return 0;
+        out_shape[i] = da > db ? da : db;
+    }
+    *out_ndim = max_ndim;
+    return 1;
+}
+
+static size_t broadcast_offset(const lmlc_tensor_t* t, const int64_t* out_idx, int out_ndim) {
+    size_t offset = 0;
+    int dim_offset = out_ndim - t->ndim;
+    for (int i = 0; i < t->ndim; i++) {
+        int64_t idx = out_idx[i + dim_offset];
+        if (t->shape[i] == 1) idx = 0;
+        offset += (size_t)idx * (size_t)t->strides[i];
+    }
+    return offset;
+}
+
 static size_t dtype_size(lmlc_dtype_t dtype) {
     // TODO: handle other dtypes
     switch (dtype) {
         case LMLC_DTYPE_F32:  return sizeof(float);
         case LMLC_DTYPE_BF16: return sizeof(lmlc_bf16_t);
+        case LMLC_DTYPE_F16:  return sizeof(lmlc_f16_t);
         default:              return sizeof(float);
     }
 }
@@ -89,6 +201,10 @@ void lmlc_tensor_fill(lmlc_tensor_t* t, float value) {
         lmlc_bf16_t* data = (lmlc_bf16_t*)t->data;
         lmlc_bf16_t bv = lmlc_f32_to_bf16(value);
         for (size_t i = 0; i < t->count; i++) data[i] = bv;
+    } else if (t->dtype == LMLC_DTYPE_F16) {
+        lmlc_f16_t* data = (lmlc_f16_t*)t->data;
+        lmlc_f16_t hv = lmlc_f32_to_f16(value);
+        for (size_t i = 0; i < t->count; i++) data[i] = hv;
     } else {
         float* data = (float*)t->data;
         for (size_t i = 0; i < t->count; i++) data[i] = value;
@@ -113,10 +229,7 @@ float lmlc_tensor_get(const lmlc_tensor_t* t, const int64_t* indices) {
     for (int i = 0; i < t->ndim; i++) {
         offset += (size_t)indices[i] * (size_t)t->strides[i];
     }
-    if (t->dtype == LMLC_DTYPE_BF16) {
-        return lmlc_bf16_to_f32(((lmlc_bf16_t*)t->data)[offset]);
-    }
-    return ((float*)t->data)[offset];
+    return tensor_get_flat(t, offset);
 }
 
 void lmlc_tensor_set(lmlc_tensor_t* t, const int64_t* indices, float value) {
@@ -126,38 +239,113 @@ void lmlc_tensor_set(lmlc_tensor_t* t, const int64_t* indices, float value) {
     for (int i = 0; i < t->ndim; i++) {
         offset += (size_t)indices[i] * (size_t)t->strides[i];
     }
-    if (t->dtype == LMLC_DTYPE_BF16) {
-        ((lmlc_bf16_t*)t->data)[offset] = lmlc_f32_to_bf16(value);
-    } else {
-        ((float*)t->data)[offset] = value;
-    }
+    tensor_set_flat(t, offset, value);
 }
 
 // ---- math ops ----
 
 void lmlc_tensor_add(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out) {
-    // TODO: check shapes match
-    // TODO: check dtypes match
-    // TODO: broadcasting
+    // TODO: cross-dtype support
     if (!a || !b || !out || !a->data || !b->data || !out->data) return;
-    if (a->count != b->count || a->count != out->count) return;
     if (a->dtype != b->dtype || a->dtype != out->dtype) return;
 
-    if (a->dtype == LMLC_DTYPE_BF16) {
-        lmlc_bf16_t* ad = (lmlc_bf16_t*)a->data;
-        lmlc_bf16_t* bd = (lmlc_bf16_t*)b->data;
-        lmlc_bf16_t* od = (lmlc_bf16_t*)out->data;
-        for (size_t i = 0; i < a->count; i++) {
-            od[i] = lmlc_f32_to_bf16(lmlc_bf16_to_f32(ad[i]) + lmlc_bf16_to_f32(bd[i]));
-        }
-    } else {
-        float* ad = (float*)a->data;
-        float* bd = (float*)b->data;
-        float* od = (float*)out->data;
-        for (size_t i = 0; i < a->count; i++) {
-            od[i] = ad[i] + bd[i];
+    int out_ndim;
+    int64_t bshape[8];
+    if (!broadcast_shape(a, b, &out_ndim, bshape)) return;
+
+    int64_t idx[8] = {0};
+    for (size_t i = 0; i < out->count; i++) {
+        size_t a_off = broadcast_offset(a, idx, out_ndim);
+        size_t b_off = broadcast_offset(b, idx, out_ndim);
+        tensor_set_flat(out, i, tensor_get_flat(a, a_off) + tensor_get_flat(b, b_off));
+        for (int d = out_ndim - 1; d >= 0; d--) {
+            if (++idx[d] < bshape[d]) break;
+            idx[d] = 0;
         }
     }
+}
+
+void lmlc_tensor_mul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out) {
+    // TODO: cross-dtype support
+    if (!a || !b || !out || !a->data || !b->data || !out->data) return;
+    if (a->dtype != b->dtype || a->dtype != out->dtype) return;
+
+    int out_ndim;
+    int64_t bshape[8];
+    if (!broadcast_shape(a, b, &out_ndim, bshape)) return;
+
+    int64_t idx[8] = {0};
+    for (size_t i = 0; i < out->count; i++) {
+        size_t a_off = broadcast_offset(a, idx, out_ndim);
+        size_t b_off = broadcast_offset(b, idx, out_ndim);
+        tensor_set_flat(out, i, tensor_get_flat(a, a_off) * tensor_get_flat(b, b_off));
+        for (int d = out_ndim - 1; d >= 0; d--) {
+            if (++idx[d] < bshape[d]) break;
+            idx[d] = 0;
+        }
+    }
+}
+
+void lmlc_tensor_scale(const lmlc_tensor_t* a, float scalar, lmlc_tensor_t* out) {
+    // TODO: cross-dtype support
+    if (!a || !out || !a->data || !out->data) return;
+    if (a->dtype != out->dtype) return;
+    if (a->count != out->count) return;
+
+    for (size_t i = 0; i < a->count; i++) {
+        tensor_set_flat(out, i, tensor_get_flat(a, i) * scalar);
+    }
+}
+
+void lmlc_tensor_matmul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out) {
+    // TODO: batched matmul (ndim > 2)
+    // TODO: broadcasting for batch dims
+    // TODO: cross-dtype support
+    if (!a || !b || !out || !a->data || !b->data || !out->data) return;
+    if (a->ndim != 2 || b->ndim != 2 || out->ndim != 2) return;
+    if (a->shape[1] != b->shape[0]) return;
+    if (out->shape[0] != a->shape[0] || out->shape[1] != b->shape[1]) return;
+    if (a->dtype != b->dtype || a->dtype != out->dtype) return;
+
+    int64_t M = a->shape[0];
+    int64_t K = a->shape[1];
+    int64_t N = b->shape[1];
+
+    for (int64_t i = 0; i < M; i++) {
+        for (int64_t j = 0; j < N; j++) {
+            float sum = 0.0f;
+            for (int64_t k = 0; k < K; k++) {
+                size_t a_off = (size_t)i * (size_t)a->strides[0] + (size_t)k * (size_t)a->strides[1];
+                size_t b_off = (size_t)k * (size_t)b->strides[0] + (size_t)j * (size_t)b->strides[1];
+                sum += tensor_get_flat(a, a_off) * tensor_get_flat(b, b_off);
+            }
+            size_t o_off = (size_t)i * (size_t)out->strides[0] + (size_t)j * (size_t)out->strides[1];
+            tensor_set_flat(out, o_off, sum);
+        }
+    }
+}
+
+float lmlc_tensor_dot(const lmlc_tensor_t* a, const lmlc_tensor_t* b) {
+    // TODO: cross-dtype support
+    if (!a || !b || !a->data || !b->data) return 0.0f;
+    if (a->count != b->count) return 0.0f;
+    if (a->dtype != b->dtype) return 0.0f;
+
+    float sum = 0.0f;
+    for (size_t i = 0; i < a->count; i++) {
+        sum += tensor_get_flat(a, i) * tensor_get_flat(b, i);
+    }
+    return sum;
+}
+
+float lmlc_tensor_norm(const lmlc_tensor_t* t) {
+    if (!t || !t->data) return 0.0f;
+    float sum = 0.0f;
+    for (size_t i = 0; i < t->count; i++) {
+        float v = tensor_get_flat(t, i);
+        sum += v * v;
+    }
+    return sqrtf(sum);
 }
 
 // ---- shape ops ----
@@ -260,11 +448,7 @@ void lmlc_tensor_print(const lmlc_tensor_t* t) {
     size_t show = t->count < 10 ? t->count : 10;
     for (size_t i = 0; i < show; i++) {
         float val;
-        if (t->dtype == LMLC_DTYPE_BF16) {
-            val = lmlc_bf16_to_f32(((lmlc_bf16_t*)t->data)[i]);
-        } else {
-            val = ((float*)t->data)[i];
-        }
+        val = tensor_get_flat(t, i);
         printf("%.4f", val);
         if (i < show - 1) printf(", ");
     }
