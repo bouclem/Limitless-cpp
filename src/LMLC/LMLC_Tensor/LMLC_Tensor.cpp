@@ -138,6 +138,29 @@ float lmlc_f16_to_f32(lmlc_f16_t h) {
 
 // ---- helpers ----
 
+// aligned allocation (SIMD-friendly, 64-byte alignment for AVX-512)
+#define LMLC_ALIGN 64
+
+static void* lmlc_aligned_alloc(size_t size) {
+#if defined(_MSC_VER)
+    return _aligned_malloc(size, LMLC_ALIGN);
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+    return aligned_alloc(LMLC_ALIGN, ((size + LMLC_ALIGN - 1) / LMLC_ALIGN) * LMLC_ALIGN);
+#else
+    void* ptr = NULL;
+    if (posix_memalign(&ptr, LMLC_ALIGN, size) != 0) return NULL;
+    return ptr;
+#endif
+}
+
+static void lmlc_aligned_free(void* ptr) {
+#if defined(_MSC_VER)
+    _aligned_free(ptr);
+#else
+    free(ptr);
+#endif
+}
+
 static void compute_strides(lmlc_tensor_t* t) {
     if (t->ndim <= 0) return;
     t->strides[t->ndim - 1] = 1;
@@ -197,8 +220,8 @@ static size_t dtype_size(lmlc_dtype_t dtype) {
 // ---- create / free ----
 
 lmlc_tensor_t* lmlc_tensor_create(int ndim, const int64_t* shape, lmlc_dtype_t dtype) {
-    if (ndim <= 0 || ndim > 8) {
-        LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..8");
+    if (ndim <= 0 || ndim > LMLC_MAX_NDIM) {
+        LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..LMLC_MAX_NDIM");
         return NULL;
     }
     if (!shape) {
@@ -225,6 +248,15 @@ lmlc_tensor_t* lmlc_tensor_create(int ndim, const int64_t* shape, lmlc_dtype_t d
     t->ndim  = ndim;
     t->dtype = dtype;
 
+    // dynamic shape and strides arrays
+    t->shape = (int64_t*)malloc((size_t)ndim * sizeof(int64_t));
+    t->strides = (int64_t*)malloc((size_t)ndim * sizeof(int64_t));
+    if (!t->shape || !t->strides) {
+        LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "malloc shape/strides");
+        free(t->shape); free(t->strides); free(t);
+        return NULL;
+    }
+
     t->count = 1;
     for (int i = 0; i < ndim; i++) {
         t->shape[i] = shape[i];
@@ -233,13 +265,13 @@ lmlc_tensor_t* lmlc_tensor_create(int ndim, const int64_t* shape, lmlc_dtype_t d
 
     compute_strides(t);
 
-    // TODO: aligned allocation (SIMD-friendly)
-    t->data = calloc(t->count, dtype_size(dtype));
+    t->data = lmlc_aligned_alloc(t->count * dtype_size(dtype));
     if (!t->data) {
-        LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "calloc tensor data");
-        free(t);
+        LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "aligned_alloc tensor data");
+        free(t->shape); free(t->strides); free(t);
         return NULL;
     }
+    memset(t->data, 0, t->count * dtype_size(dtype));
     t->owns_data = 1;
 
     return t;
@@ -247,7 +279,9 @@ lmlc_tensor_t* lmlc_tensor_create(int ndim, const int64_t* shape, lmlc_dtype_t d
 
 void lmlc_tensor_free(lmlc_tensor_t* t) {
     if (!t) return;
-    if (t->owns_data) free(t->data);
+    if (t->owns_data) lmlc_aligned_free(t->data);
+    free(t->shape);
+    free(t->strides);
     free(t);
 }
 
@@ -340,13 +374,13 @@ void lmlc_tensor_add(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor
     }
 
     int out_ndim;
-    int64_t bshape[8];
+    int64_t bshape[LMLC_MAX_NDIM];
     if (!broadcast_shape(a, b, &out_ndim, bshape)) {
         LMLC_SET_ERROR(LMLC_ERR_BROADCAST_FAILED, "shapes cannot broadcast");
         return;
     }
 
-    int64_t idx[8] = {0};
+    int64_t idx[LMLC_MAX_NDIM] = {0};
     for (size_t i = 0; i < out->count; i++) {
         size_t a_off = broadcast_offset(a, idx, out_ndim);
         size_t b_off = broadcast_offset(b, idx, out_ndim);
@@ -365,13 +399,13 @@ void lmlc_tensor_mul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor
     }
 
     int out_ndim;
-    int64_t bshape[8];
+    int64_t bshape[LMLC_MAX_NDIM];
     if (!broadcast_shape(a, b, &out_ndim, bshape)) {
         LMLC_SET_ERROR(LMLC_ERR_BROADCAST_FAILED, "shapes cannot broadcast");
         return;
     }
 
-    int64_t idx[8] = {0};
+    int64_t idx[LMLC_MAX_NDIM] = {0};
     for (size_t i = 0; i < out->count; i++) {
         size_t a_off = broadcast_offset(a, idx, out_ndim);
         size_t b_off = broadcast_offset(b, idx, out_ndim);
@@ -419,7 +453,7 @@ void lmlc_tensor_matmul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_ten
     }
 
     // check batch dims are broadcastable
-    int64_t batch_shape[8];
+    int64_t batch_shape[LMLC_MAX_NDIM];
     for (int i = 0; i < max_batch; i++) {
         int64_t da = (i < max_batch - a_batch) ? 1 : a->shape[i - (max_batch - a_batch)];
         int64_t db = (i < max_batch - b_batch) ? 1 : b->shape[i - (max_batch - b_batch)];
@@ -457,7 +491,7 @@ void lmlc_tensor_matmul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_ten
     size_t b_batch_stride = (size_t)K * (size_t)N;
     size_t o_batch_stride = (size_t)M * (size_t)N;
 
-    int64_t bidx[8] = {0};
+    int64_t bidx[LMLC_MAX_NDIM] = {0};
     for (size_t bi = 0; bi < batch_count; bi++) {
         // compute a and b batch offsets
         size_t a_off_base = 0, b_off_base = 0;
@@ -530,13 +564,27 @@ float lmlc_tensor_norm(const lmlc_tensor_t* t) {
 void lmlc_tensor_reshape(lmlc_tensor_t* t, int ndim, const int64_t* shape) {
     if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return; }
     if (!shape) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null shape"); return; }
-    if (ndim <= 0 || ndim > 8) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..8"); return; }
+    if (ndim <= 0 || ndim > LMLC_MAX_NDIM) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..LMLC_MAX_NDIM"); return; }
     size_t new_count = 1;
     for (int i = 0; i < ndim; i++) {
         if (shape[i] <= 0) { LMLC_SET_ERROR(LMLC_ERR_INVALID_SHAPE, "shape dim must be > 0"); return; }
         new_count *= (size_t)shape[i];
     }
     if (new_count != t->count) { LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "reshape count mismatch"); return; }
+    // realloc shape/strides if ndim changed
+    if (ndim != t->ndim) {
+        int64_t* new_shape = (int64_t*)realloc(t->shape, (size_t)ndim * sizeof(int64_t));
+        int64_t* new_strides = (int64_t*)realloc(t->strides, (size_t)ndim * sizeof(int64_t));
+        if (!new_shape || !new_strides) {
+            LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "realloc shape/strides");
+            free(new_shape ? new_shape : t->shape);
+            free(new_strides ? new_strides : t->strides);
+            t->shape = NULL; t->strides = NULL;
+            return;
+        }
+        t->shape = new_shape;
+        t->strides = new_strides;
+    }
     t->ndim = ndim;
     for (int i = 0; i < ndim; i++) t->shape[i] = shape[i];
     compute_strides(t);
@@ -560,7 +608,7 @@ void lmlc_tensor_permute(lmlc_tensor_t* t, const int* perm) {
     if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return; }
     if (!perm) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null perm"); return; }
     // validate permutation
-    int seen[8] = {0};
+    int seen[LMLC_MAX_NDIM] = {0};
     for (int i = 0; i < t->ndim; i++) {
         if (perm[i] < 0 || perm[i] >= t->ndim) {
             LMLC_SET_ERROR(LMLC_ERR_INVALID_PERM, "perm index out of bounds");
@@ -572,7 +620,7 @@ void lmlc_tensor_permute(lmlc_tensor_t* t, const int* perm) {
         }
         seen[perm[i]] = 1;
     }
-    int64_t new_shape[8], new_strides[8];
+    int64_t new_shape[LMLC_MAX_NDIM], new_strides[LMLC_MAX_NDIM];
     for (int i = 0; i < t->ndim; i++) {
         new_shape[i] = t->shape[perm[i]];
         new_strides[i] = t->strides[perm[i]];
@@ -597,20 +645,32 @@ void lmlc_tensor_squeeze(lmlc_tensor_t* t, int dim) {
 void lmlc_tensor_unsqueeze(lmlc_tensor_t* t, int dim) {
     if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return; }
     if (dim < 0 || dim > t->ndim) { LMLC_SET_ERROR(LMLC_ERR_OUT_OF_BOUNDS, "unsqueeze dim out of bounds"); return; }
-    if (t->ndim >= 8) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim would exceed 8"); return; }
+    if (t->ndim >= LMLC_MAX_NDIM) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim would exceed LMLC_MAX_NDIM"); return; }
+    int new_ndim = t->ndim + 1;
+    int64_t* new_shape = (int64_t*)realloc(t->shape, (size_t)new_ndim * sizeof(int64_t));
+    int64_t* new_strides = (int64_t*)realloc(t->strides, (size_t)new_ndim * sizeof(int64_t));
+    if (!new_shape || !new_strides) {
+        LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "realloc shape/strides");
+        free(new_shape ? new_shape : t->shape);
+        free(new_strides ? new_strides : t->strides);
+        t->shape = NULL; t->strides = NULL;
+        return;
+    }
+    t->shape = new_shape;
+    t->strides = new_strides;
     for (int i = t->ndim; i > dim; i--) {
         t->shape[i] = t->shape[i - 1];
         t->strides[i] = t->strides[i - 1];
     }
     t->shape[dim] = 1;
     t->strides[dim] = 0; // size-1 dim, stride unused
-    t->ndim++;
+    t->ndim = new_ndim;
 }
 
 lmlc_tensor_t* lmlc_tensor_view(lmlc_tensor_t* t, int ndim, const int64_t* shape) {
     if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return NULL; }
     if (!shape) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null shape"); return NULL; }
-    if (ndim <= 0 || ndim > 8) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..8"); return NULL; }
+    if (ndim <= 0 || ndim > LMLC_MAX_NDIM) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..LMLC_MAX_NDIM"); return NULL; }
 
     size_t new_count = 1;
     for (int i = 0; i < ndim; i++) {
@@ -624,6 +684,13 @@ lmlc_tensor_t* lmlc_tensor_view(lmlc_tensor_t* t, int ndim, const int64_t* shape
     v->ndim = ndim;
     v->dtype = t->dtype;
     v->count = new_count;
+    v->shape = (int64_t*)malloc((size_t)ndim * sizeof(int64_t));
+    v->strides = (int64_t*)malloc((size_t)ndim * sizeof(int64_t));
+    if (!v->shape || !v->strides) {
+        LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "malloc view shape/strides");
+        free(v->shape); free(v->strides); free(v);
+        return NULL;
+    }
     for (int i = 0; i < ndim; i++) v->shape[i] = shape[i];
     compute_strides(v);
     v->data = t->data;
@@ -633,9 +700,39 @@ lmlc_tensor_t* lmlc_tensor_view(lmlc_tensor_t* t, int ndim, const int64_t* shape
 
 // ---- debug ----
 
+static void print_tensor_data(const lmlc_tensor_t* t, int dim, size_t offset, int indent) {
+    if (dim == t->ndim - 1) {
+        // last dim: print as flat row
+        printf("[");
+        int64_t n = t->shape[dim];
+        for (int64_t i = 0; i < n; i++) {
+            if (i > 0) printf(", ");
+            if (n > 10 && i >= 6 && i < n - 3) {
+                if (i == 6) printf("...");
+                continue;
+            }
+            printf("%.4f", tensor_get_flat(t, offset + (size_t)i * (size_t)t->strides[dim]));
+        }
+        printf("]");
+        return;
+    }
+    printf("[");
+    int64_t n = t->shape[dim];
+    for (int64_t i = 0; i < n; i++) {
+        if (i > 0) {
+            printf(",\n");
+            for (int s = 0; s <= indent; s++) printf("  ");
+        }
+        if (n > 6 && i >= 4 && i < n - 2) {
+            if (i == 4) printf("...");
+            continue;
+        }
+        print_tensor_data(t, dim + 1, offset + (size_t)i * (size_t)t->strides[dim], indent + 1);
+    }
+    printf("]");
+}
+
 void lmlc_tensor_print(const lmlc_tensor_t* t) {
-    // TODO: multi-dimensional pretty print
-    // TODO: handle ndim > 2
     if (!t) {
         printf("(null tensor)\n");
         return;
@@ -648,15 +745,7 @@ void lmlc_tensor_print(const lmlc_tensor_t* t) {
     }
     printf("] dtype=%d count=%zu\n", t->dtype, t->count);
 
-    // flat print for now
-    printf("  data: [");
-    size_t show = t->count < 10 ? t->count : 10;
-    for (size_t i = 0; i < show; i++) {
-        float val;
-        val = tensor_get_flat(t, i);
-        printf("%.4f", val);
-        if (i < show - 1) printf(", ");
-    }
-    if (t->count > 10) printf(", ...");
-    printf("]\n");
+    printf("  ");
+    print_tensor_data(t, 0, 0, 0);
+    printf("\n");
 }

@@ -1,4 +1,4 @@
 add_executable(test_lmlc_tensor test_LMLC_Tensor.cpp)
-target_link_libraries(test_lmlc_tensor lmlc_tensor)
+target_link_libraries(test_lmlc_tensor lmlc_tensor lmlc_graph)
 
 add_test(NAME lmlc_tensor_all COMMAND test_lmlc_tensor)

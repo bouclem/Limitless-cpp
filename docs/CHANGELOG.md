@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.1.0] - 2026-08-29
+
+### Added
+- **Multi-dimensional pretty print** — recursive `print_tensor_data` helper
+  - Handles any ndim with nested bracket formatting
+  - Truncates large dims (>10 elements in last dim, >6 in outer dims) with `...`
+  - Indented multi-line output for ndim > 1
+- **Dynamic shape/strides arrays** — `int64_t* shape` / `int64_t* strides` (was fixed `[8]`)
+  - `LMLC_MAX_NDIM` define (32) replaces hardcoded limit of 8
+  - `malloc` in `lmlc_tensor_create` and `lmlc_tensor_view`
+  - `realloc` in `lmlc_tensor_reshape` and `lmlc_tensor_unsqueeze` when ndim changes
+  - `free` in `lmlc_tensor_free`
+- **Aligned allocation (SIMD-friendly)** — 64-byte alignment for AVX-512
+  - `lmlc_aligned_alloc` / `lmlc_aligned_free` helpers
+  - Platform-specific: `_aligned_malloc` (MSVC), `aligned_alloc` (C11), `posix_memalign` (POSIX)
+  - Used for tensor data buffer in `lmlc_tensor_create`
+- **LMLC_Graph module** — simple computation graph inspired by GGML
+  - `lmlc_cgraph_t` — graph with dynamic node array (auto-growing capacity)
+  - `lmlc_cnode_t` — compute node with op type, up to 2 srcs, 1 dst, scalar, perm, shape
+  - `lmlc_op_t` enum — 13 op types (add, mul, scale, matmul, dot, norm, reshape, etc.)
+  - `lmlc_graph_create` / `lmlc_graph_free` — lifecycle
+  - `lmlc_graph_add_binary` / `lmlc_graph_add_scale` / `lmlc_graph_add_matmul` — build API
+  - `lmlc_graph_forward` — execute all nodes in insertion order
+  - `lmlc_graph_print` / `lmlc_op_string` — debug
+  - Lots of TODOs: backward pass, topological sort, memory planning, op fusion, lazy eval, JIT
+- **Tests** — 4 new test cases (26 total)
+  - `test_multidim_print` — 2D tensor pretty print (no crash)
+  - `test_ndim_gt_8` — ndim=10 succeeds, ndim=33 fails with error
+  - `test_graph_forward` — chained add + scale through graph
+  - `test_graph_matmul` — matmul through graph
+
+### Changed
+- `lmlc_tensor_t` struct: `shape`/`strides` are now `int64_t*` (was `int64_t[8]`)
+- All ndim limits changed from `8` to `LMLC_MAX_NDIM` (32)
+- All local `[8]` arrays in math/shape ops changed to `[LMLC_MAX_NDIM]`
+- Tensor data allocation uses `lmlc_aligned_alloc` instead of `calloc`
+- `lmlc_tensor_free` calls `lmlc_aligned_free` + `free(shape)` + `free(strides)`
+- `lmlc_tensor_reshape` and `lmlc_tensor_unsqueeze` now `realloc` shape/strides on ndim change
+- `lmlc_tensor_view` now `malloc`s its own shape/strides arrays
+
 ## [0.0.4] - 2026-08-29
 
 ### Added

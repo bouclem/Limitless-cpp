@@ -23,4 +23,10 @@ add_library(lmlc_tensor STATIC
 )
 target_include_directories(lmlc_tensor PUBLIC src/LMLC/LMLC_Tensor)
 
+add_library(lmlc_graph STATIC
+    src/LMLC/LMLC_Graph/LMLC_Graph.cpp
+)
+target_include_directories(lmlc_graph PUBLIC src/LMLC/LMLC_Graph)
+target_link_libraries(lmlc_graph PUBLIC lmlc_tensor)
+
 add_subdirectory(src/LMLC/LMLC_Tensor/test)

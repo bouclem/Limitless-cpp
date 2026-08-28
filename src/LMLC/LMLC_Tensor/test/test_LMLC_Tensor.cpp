@@ -1,4 +1,5 @@
 #include "LMLC_Tensor.h"
+#include "LMLC_Graph.h"
 
 #include <stdio.h>
 #include <math.h>
@@ -414,6 +415,107 @@ static void test_error_reporting(void) {
     END_TEST;
 }
 
+static void test_multidim_print(void) {
+    TEST("multidim_print");
+    int64_t shape[] = {2, 3};
+    lmlc_tensor_t* t = lmlc_tensor_create(2, shape, LMLC_DTYPE_F32);
+    float val = 1.0f;
+    int64_t idx[2];
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < 3; j++) {
+            idx[0] = i; idx[1] = j;
+            lmlc_tensor_set(t, idx, val++);
+        }
+    // just verify it doesn't crash
+    lmlc_tensor_print(t);
+    lmlc_tensor_free(t);
+    END_TEST;
+}
+
+static void test_ndim_gt_8(void) {
+    TEST("ndim_gt_8");
+    int64_t shape[10];
+    for (int i = 0; i < 10; i++) shape[i] = 1;
+    lmlc_tensor_t* t = lmlc_tensor_create(10, shape, LMLC_DTYPE_F32);
+    ASSERT(t != NULL, "ndim=10 should succeed with dynamic arrays");
+    ASSERT(t->ndim == 10, "ndim should be 10");
+
+    int64_t idx[10] = {0,0,0,0,0,0,0,0,0,0};
+    lmlc_tensor_set(t, idx, 42.0f);
+    ASSERT_F32(lmlc_tensor_get(t, idx), 42.0f, 1e-5f);
+
+    lmlc_tensor_free(t);
+
+    // ndim > LMLC_MAX_NDIM should fail
+    int64_t big_shape[33];
+    for (int i = 0; i < 33; i++) big_shape[i] = 1;
+    lmlc_tensor_t* bad = lmlc_tensor_create(33, big_shape, LMLC_DTYPE_F32);
+    ASSERT(bad == NULL, "ndim=33 should fail");
+    ASSERT(lmlc_last_error() == LMLC_ERR_INVALID_NDIM, "should set invalid ndim");
+    lmlc_clear_error();
+    END_TEST;
+}
+
+static void test_graph_forward(void) {
+    TEST("graph_forward");
+    int64_t shape[] = {3};
+    lmlc_tensor_t* a = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* b = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* c = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* d = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+
+    lmlc_tensor_fill(a, 2.0f);
+    lmlc_tensor_fill(b, 3.0f);
+
+    // c = a + b, then d = c * 2.0
+    lmlc_cgraph_t* g = lmlc_graph_create(8);
+    ASSERT(g != NULL, "graph create should succeed");
+
+    lmlc_graph_add_binary(g, LMLC_OP_ADD, a, b, c);
+    lmlc_graph_add_scale(g, c, 2.0f, d);
+    ASSERT(g->n_nodes == 2, "should have 2 nodes");
+
+    lmlc_graph_forward(g);
+
+    int64_t idx[] = {0};
+    // c = [5, 5, 5], d = [10, 10, 10]
+    ASSERT_F32(lmlc_tensor_get(c, idx), 5.0f, 1e-5f);
+    ASSERT_F32(lmlc_tensor_get(d, idx), 10.0f, 1e-5f);
+
+    lmlc_graph_free(g);
+    lmlc_tensor_free(a);
+    lmlc_tensor_free(b);
+    lmlc_tensor_free(c);
+    lmlc_tensor_free(d);
+    END_TEST;
+}
+
+static void test_graph_matmul(void) {
+    TEST("graph_matmul");
+    int64_t shape_a[] = {2, 3};
+    int64_t shape_b[] = {3, 2};
+    int64_t shape_out[] = {2, 2};
+    lmlc_tensor_t* a = lmlc_tensor_create(2, shape_a, LMLC_DTYPE_F32);
+    lmlc_tensor_t* b = lmlc_tensor_create(2, shape_b, LMLC_DTYPE_F32);
+    lmlc_tensor_t* out = lmlc_tensor_create(2, shape_out, LMLC_DTYPE_F32);
+
+    lmlc_tensor_fill(a, 1.0f);
+    lmlc_tensor_fill(b, 1.0f);
+
+    lmlc_cgraph_t* g = lmlc_graph_create(4);
+    lmlc_graph_add_matmul(g, a, b, out);
+    lmlc_graph_forward(g);
+
+    int64_t idx[] = {0, 0};
+    ASSERT_F32(lmlc_tensor_get(out, idx), 3.0f, 1e-4f);
+
+    lmlc_graph_free(g);
+    lmlc_tensor_free(a);
+    lmlc_tensor_free(b);
+    lmlc_tensor_free(out);
+    END_TEST;
+}
+
 int main(void) {
     printf("=== LMLC_Tensor Tests ===\n\n");
 
@@ -439,6 +541,10 @@ int main(void) {
     test_view();
     test_permute();
     test_error_reporting();
+    test_multidim_print();
+    test_ndim_gt_8();
+    test_graph_forward();
+    test_graph_matmul();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

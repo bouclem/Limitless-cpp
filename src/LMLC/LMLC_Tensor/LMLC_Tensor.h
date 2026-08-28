@@ -9,6 +9,9 @@ extern "C" {
 #endif
 
 // TODO: add I8, I16, I32, I64
+
+#define LMLC_MAX_NDIM 32
+
 typedef uint16_t lmlc_bf16_t;
 typedef uint16_t lmlc_f16_t;
 typedef uint8_t  lmlc_bool_t;
@@ -22,13 +25,13 @@ typedef enum {
 } lmlc_dtype_t;
 
 typedef struct {
-    int   ndim;          // number of dimensions
-    int64_t shape[8];    // TODO: dynamic shape array instead of fixed 8
-    int64_t strides[8];  // element strides (not bytes)
-    size_t  count;       // total number of elements
+    int      ndim;          // number of dimensions
+    int64_t *shape;         // dynamically allocated shape array
+    int64_t *strides;       // dynamically allocated strides (element strides, not bytes)
+    size_t   count;         // total number of elements
     lmlc_dtype_t dtype;
-    void   *data;
-    int    owns_data;    // 1 if this tensor owns the data buffer
+    void    *data;
+    int      owns_data;     // 1 if this tensor owns the data buffer
 } lmlc_tensor_t;
 
 // ---- error reporting ----
