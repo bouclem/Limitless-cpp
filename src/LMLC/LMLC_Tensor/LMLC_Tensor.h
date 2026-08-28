@@ -8,14 +8,16 @@
 extern "C" {
 #endif
 
-// TODO: add I8, I16, I32, I64, BOOL
+// TODO: add I8, I16, I32, I64
 typedef uint16_t lmlc_bf16_t;
 typedef uint16_t lmlc_f16_t;
+typedef uint8_t  lmlc_bool_t;
 
 typedef enum {
     LMLC_DTYPE_F32 = 0,
     LMLC_DTYPE_BF16,
     LMLC_DTYPE_F16,
+    LMLC_DTYPE_BOOL,
     LMLC_DTYPE_COUNT
 } lmlc_dtype_t;
 
@@ -28,6 +30,35 @@ typedef struct {
     void   *data;
     int    owns_data;    // 1 if this tensor owns the data buffer
 } lmlc_tensor_t;
+
+// ---- error reporting ----
+
+typedef enum {
+    LMLC_OK = 0,
+    LMLC_ERR_NULL,
+    LMLC_ERR_SHAPE_MISMATCH,
+    LMLC_ERR_DTYPE_MISMATCH,
+    LMLC_ERR_OUT_OF_BOUNDS,
+    LMLC_ERR_INVALID_NDIM,
+    LMLC_ERR_INVALID_SHAPE,
+    LMLC_ERR_ALLOC_FAILED,
+    LMLC_ERR_BROADCAST_FAILED,
+    LMLC_ERR_INVALID_PERM,
+    LMLC_ERR_MATMUL_DIM,
+} lmlc_error_t;
+
+typedef struct {
+    lmlc_error_t code;
+    const char*  msg;
+    const char*  func;
+    int          line;
+} lmlc_error_info_t;
+
+lmlc_error_t      lmlc_last_error(void);
+const char*       lmlc_last_error_msg(void);
+lmlc_error_info_t lmlc_last_error_info(void);
+void              lmlc_clear_error(void);
+const char*       lmlc_error_string(lmlc_error_t code);
 
 // bf16 conversion
 lmlc_bf16_t lmlc_f32_to_bf16(float f);

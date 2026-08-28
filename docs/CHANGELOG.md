@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.0.4] - 2026-08-29
+
+### Added
+- **CMake build system** — root `CMakeLists.txt` with library target, test integration
+  - `lmlc_tensor` static library target
+  - `enable_testing()` + `add_test()` for CTest
+  - Warning flags (`-Wall -Wextra -Wpedantic` / `/W4`)
+  - Debug build by default
+- **BOOL dtype** — `LMLC_DTYPE_BOOL` with `lmlc_bool_t` (uint8_t)
+  - Tensor create, fill, get, set, print all support BOOL
+- **Cross-dtype support** — all ops convert through f32 internally
+  - `lmlc_tensor_copy` — cross-dtype copy via element-wise conversion
+  - `lmlc_tensor_add` / `lmlc_tensor_mul` — mixed dtype inputs
+  - `lmlc_tensor_dot` / `lmlc_tensor_scale` — mixed dtype inputs
+  - `lmlc_tensor_matmul` — mixed dtype inputs
+- **Batched matmul** — `lmlc_tensor_matmul` now supports ndim >= 2
+  - Batch dimension broadcasting (NumPy-style)
+  - `[batch..., M, K] x [batch..., K, N] -> [batch..., M, N]`
+- **Error reporting system**:
+  - `lmlc_error_t` enum with 11 error codes
+  - `lmlc_error_info_t` struct with code, message, function name, line number
+  - `lmlc_last_error()` / `lmlc_last_error_msg()` / `lmlc_last_error_info()`
+  - `lmlc_clear_error()` / `lmlc_error_string()`
+  - `LMLC_SET_ERROR` macro captures `__func__` and `__LINE__`
+- **Validation everywhere**:
+  - `lmlc_tensor_create` — validates ndim (1..8), shape values (>0), dtype
+  - `lmlc_tensor_get` / `lmlc_tensor_set` — bounds checking on all indices
+  - `lmlc_tensor_reshape` — validates ndim, shape values, count match
+  - `lmlc_tensor_permute` — validates permutation is valid (no duplicates, in range)
+  - `lmlc_tensor_squeeze` — validates dim is size 1
+  - `lmlc_tensor_unsqueeze` — validates ndim won't exceed 8
+  - `lmlc_tensor_view` — validates ndim, shape values, count match
+  - `lmlc_tensor_transpose` — validates dim bounds
+- **Tests** — `test/test_LMLC_Tensor.cpp` with 22 test cases
+  - create/free, invalid create, fill/zero, get/set bounds
+  - BF16/F16/BOOL dtype conversions
+  - add/mul broadcasting, 2D matmul, batched matmul
+  - cross-dtype copy, cross-dtype add
+  - scale, dot, norm, reshape, transpose, squeeze/unsqueeze, view, permute
+  - error reporting verification
+
+### Changed
+- Removed dtype-match checks from all math ops (cross-dtype via f32 conversion)
+- `lmlc_tensor_matmul` rewritten: batched + broadcasting + cross-dtype (was 2D-only)
+- All functions now set error state on failure instead of silent return
+
 ## [0.0.3] - 2026-08-28
 
 ### Added

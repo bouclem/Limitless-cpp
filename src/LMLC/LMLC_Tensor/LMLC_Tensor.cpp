@@ -5,6 +5,47 @@
 #include <stdio.h>
 #include <math.h>
 
+// ---- error reporting ----
+
+static lmlc_error_info_t g_error = { LMLC_OK, "no error", NULL, 0 };
+
+#define LMLC_SET_ERROR(err_code, err_msg) do { \
+    g_error.code = (err_code); \
+    g_error.msg = (err_msg); \
+    g_error.func = __func__; \
+    g_error.line = __LINE__; \
+} while (0)
+
+lmlc_error_t lmlc_last_error(void) { return g_error.code; }
+
+const char* lmlc_last_error_msg(void) { return g_error.msg; }
+
+lmlc_error_info_t lmlc_last_error_info(void) { return g_error; }
+
+void lmlc_clear_error(void) {
+    g_error.code = LMLC_OK;
+    g_error.msg = "no error";
+    g_error.func = NULL;
+    g_error.line = 0;
+}
+
+const char* lmlc_error_string(lmlc_error_t code) {
+    switch (code) {
+        case LMLC_OK:                   return "ok";
+        case LMLC_ERR_NULL:             return "null pointer";
+        case LMLC_ERR_SHAPE_MISMATCH:   return "shape mismatch";
+        case LMLC_ERR_DTYPE_MISMATCH:   return "dtype mismatch";
+        case LMLC_ERR_OUT_OF_BOUNDS:    return "index out of bounds";
+        case LMLC_ERR_INVALID_NDIM:     return "invalid number of dimensions";
+        case LMLC_ERR_INVALID_SHAPE:    return "invalid shape value";
+        case LMLC_ERR_ALLOC_FAILED:     return "memory allocation failed";
+        case LMLC_ERR_BROADCAST_FAILED: return "broadcast failed";
+        case LMLC_ERR_INVALID_PERM:     return "invalid permutation";
+        case LMLC_ERR_MATMUL_DIM:       return "matmul dimension mismatch";
+        default:                        return "unknown error";
+    }
+}
+
 // ---- bf16 conversion ----
 
 lmlc_bf16_t lmlc_f32_to_bf16(float f) {
@@ -108,12 +149,14 @@ static void compute_strides(lmlc_tensor_t* t) {
 static float tensor_get_flat(const lmlc_tensor_t* t, size_t offset) {
     if (t->dtype == LMLC_DTYPE_BF16) return lmlc_bf16_to_f32(((lmlc_bf16_t*)t->data)[offset]);
     if (t->dtype == LMLC_DTYPE_F16)  return lmlc_f16_to_f32(((lmlc_f16_t*)t->data)[offset]);
+    if (t->dtype == LMLC_DTYPE_BOOL) return (float)((lmlc_bool_t*)t->data)[offset];
     return ((float*)t->data)[offset];
 }
 
 static void tensor_set_flat(lmlc_tensor_t* t, size_t offset, float val) {
     if (t->dtype == LMLC_DTYPE_BF16) { ((lmlc_bf16_t*)t->data)[offset] = lmlc_f32_to_bf16(val); return; }
     if (t->dtype == LMLC_DTYPE_F16)  { ((lmlc_f16_t*)t->data)[offset] = lmlc_f32_to_f16(val); return; }
+    if (t->dtype == LMLC_DTYPE_BOOL) { ((lmlc_bool_t*)t->data)[offset] = (val != 0.0f) ? 1 : 0; return; }
     ((float*)t->data)[offset] = val;
 }
 
@@ -142,11 +185,11 @@ static size_t broadcast_offset(const lmlc_tensor_t* t, const int64_t* out_idx, i
 }
 
 static size_t dtype_size(lmlc_dtype_t dtype) {
-    // TODO: handle other dtypes
     switch (dtype) {
         case LMLC_DTYPE_F32:  return sizeof(float);
         case LMLC_DTYPE_BF16: return sizeof(lmlc_bf16_t);
         case LMLC_DTYPE_F16:  return sizeof(lmlc_f16_t);
+        case LMLC_DTYPE_BOOL: return sizeof(lmlc_bool_t);
         default:              return sizeof(float);
     }
 }
@@ -154,11 +197,30 @@ static size_t dtype_size(lmlc_dtype_t dtype) {
 // ---- create / free ----
 
 lmlc_tensor_t* lmlc_tensor_create(int ndim, const int64_t* shape, lmlc_dtype_t dtype) {
-    // TODO: validate ndim > 0 and <= 8
-    // TODO: validate shape values > 0
+    if (ndim <= 0 || ndim > 8) {
+        LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..8");
+        return NULL;
+    }
+    if (!shape) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "shape is NULL");
+        return NULL;
+    }
+    if (dtype < 0 || dtype >= LMLC_DTYPE_COUNT) {
+        LMLC_SET_ERROR(LMLC_ERR_DTYPE_MISMATCH, "invalid dtype");
+        return NULL;
+    }
+    for (int i = 0; i < ndim; i++) {
+        if (shape[i] <= 0) {
+            LMLC_SET_ERROR(LMLC_ERR_INVALID_SHAPE, "shape dim must be > 0");
+            return NULL;
+        }
+    }
 
     lmlc_tensor_t* t = (lmlc_tensor_t*)calloc(1, sizeof(lmlc_tensor_t));
-    if (!t) return NULL;
+    if (!t) {
+        LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "calloc tensor struct");
+        return NULL;
+    }
 
     t->ndim  = ndim;
     t->dtype = dtype;
@@ -174,6 +236,7 @@ lmlc_tensor_t* lmlc_tensor_create(int ndim, const int64_t* shape, lmlc_dtype_t d
     // TODO: aligned allocation (SIMD-friendly)
     t->data = calloc(t->count, dtype_size(dtype));
     if (!t->data) {
+        LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "calloc tensor data");
         free(t);
         return NULL;
     }
@@ -196,7 +259,7 @@ void lmlc_tensor_zero(lmlc_tensor_t* t) {
 }
 
 void lmlc_tensor_fill(lmlc_tensor_t* t, float value) {
-    if (!t || !t->data) return;
+    if (!t || !t->data) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor or data"); return; }
     if (t->dtype == LMLC_DTYPE_BF16) {
         lmlc_bf16_t* data = (lmlc_bf16_t*)t->data;
         lmlc_bf16_t bv = lmlc_f32_to_bf16(value);
@@ -205,6 +268,10 @@ void lmlc_tensor_fill(lmlc_tensor_t* t, float value) {
         lmlc_f16_t* data = (lmlc_f16_t*)t->data;
         lmlc_f16_t hv = lmlc_f32_to_f16(value);
         for (size_t i = 0; i < t->count; i++) data[i] = hv;
+    } else if (t->dtype == LMLC_DTYPE_BOOL) {
+        lmlc_bool_t* data = (lmlc_bool_t*)t->data;
+        lmlc_bool_t bv = (value != 0.0f) ? 1 : 0;
+        memset(data, bv, t->count * sizeof(lmlc_bool_t));
     } else {
         float* data = (float*)t->data;
         for (size_t i = 0; i < t->count; i++) data[i] = value;
@@ -212,31 +279,53 @@ void lmlc_tensor_fill(lmlc_tensor_t* t, float value) {
 }
 
 void lmlc_tensor_copy(const lmlc_tensor_t* src, lmlc_tensor_t* dst) {
-    // TODO: check shape match
-    // TODO: cross-dtype conversion
-    if (!src || !dst || !src->data || !dst->data) return;
-    if (src->count != dst->count) return;
-    if (src->dtype != dst->dtype) return; // TODO: cross-dtype copy
-    memcpy(dst->data, src->data, src->count * dtype_size(src->dtype));
+    if (!src || !dst || !src->data || !dst->data) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor or data");
+        return;
+    }
+    if (src->count != dst->count) {
+        LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "src and dst count mismatch");
+        return;
+    }
+    if (src->dtype == dst->dtype) {
+        memcpy(dst->data, src->data, src->count * dtype_size(src->dtype));
+    } else {
+        // cross-dtype: convert through f32
+        for (size_t i = 0; i < src->count; i++) {
+            tensor_set_flat(dst, i, tensor_get_flat(src, i));
+        }
+    }
 }
 
 // ---- element access ----
 
 float lmlc_tensor_get(const lmlc_tensor_t* t, const int64_t* indices) {
-    // TODO: bounds checking
-    if (!t || !t->data || !indices) return 0.0f;
+    if (!t || !t->data || !indices) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor, data, or indices");
+        return 0.0f;
+    }
     size_t offset = 0;
     for (int i = 0; i < t->ndim; i++) {
+        if (indices[i] < 0 || indices[i] >= t->shape[i]) {
+            LMLC_SET_ERROR(LMLC_ERR_OUT_OF_BOUNDS, "index out of bounds");
+            return 0.0f;
+        }
         offset += (size_t)indices[i] * (size_t)t->strides[i];
     }
     return tensor_get_flat(t, offset);
 }
 
 void lmlc_tensor_set(lmlc_tensor_t* t, const int64_t* indices, float value) {
-    // TODO: bounds checking
-    if (!t || !t->data || !indices) return;
+    if (!t || !t->data || !indices) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor, data, or indices");
+        return;
+    }
     size_t offset = 0;
     for (int i = 0; i < t->ndim; i++) {
+        if (indices[i] < 0 || indices[i] >= t->shape[i]) {
+            LMLC_SET_ERROR(LMLC_ERR_OUT_OF_BOUNDS, "index out of bounds");
+            return;
+        }
         offset += (size_t)indices[i] * (size_t)t->strides[i];
     }
     tensor_set_flat(t, offset, value);
@@ -245,13 +334,17 @@ void lmlc_tensor_set(lmlc_tensor_t* t, const int64_t* indices, float value) {
 // ---- math ops ----
 
 void lmlc_tensor_add(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out) {
-    // TODO: cross-dtype support
-    if (!a || !b || !out || !a->data || !b->data || !out->data) return;
-    if (a->dtype != b->dtype || a->dtype != out->dtype) return;
+    if (!a || !b || !out || !a->data || !b->data || !out->data) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor or data");
+        return;
+    }
 
     int out_ndim;
     int64_t bshape[8];
-    if (!broadcast_shape(a, b, &out_ndim, bshape)) return;
+    if (!broadcast_shape(a, b, &out_ndim, bshape)) {
+        LMLC_SET_ERROR(LMLC_ERR_BROADCAST_FAILED, "shapes cannot broadcast");
+        return;
+    }
 
     int64_t idx[8] = {0};
     for (size_t i = 0; i < out->count; i++) {
@@ -266,13 +359,17 @@ void lmlc_tensor_add(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor
 }
 
 void lmlc_tensor_mul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out) {
-    // TODO: cross-dtype support
-    if (!a || !b || !out || !a->data || !b->data || !out->data) return;
-    if (a->dtype != b->dtype || a->dtype != out->dtype) return;
+    if (!a || !b || !out || !a->data || !b->data || !out->data) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor or data");
+        return;
+    }
 
     int out_ndim;
     int64_t bshape[8];
-    if (!broadcast_shape(a, b, &out_ndim, bshape)) return;
+    if (!broadcast_shape(a, b, &out_ndim, bshape)) {
+        LMLC_SET_ERROR(LMLC_ERR_BROADCAST_FAILED, "shapes cannot broadcast");
+        return;
+    }
 
     int64_t idx[8] = {0};
     for (size_t i = 0; i < out->count; i++) {
@@ -287,10 +384,14 @@ void lmlc_tensor_mul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor
 }
 
 void lmlc_tensor_scale(const lmlc_tensor_t* a, float scalar, lmlc_tensor_t* out) {
-    // TODO: cross-dtype support
-    if (!a || !out || !a->data || !out->data) return;
-    if (a->dtype != out->dtype) return;
-    if (a->count != out->count) return;
+    if (!a || !out || !a->data || !out->data) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor or data");
+        return;
+    }
+    if (a->count != out->count) {
+        LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "a and out count mismatch");
+        return;
+    }
 
     for (size_t i = 0; i < a->count; i++) {
         tensor_set_flat(out, i, tensor_get_flat(a, i) * scalar);
@@ -298,38 +399,111 @@ void lmlc_tensor_scale(const lmlc_tensor_t* a, float scalar, lmlc_tensor_t* out)
 }
 
 void lmlc_tensor_matmul(const lmlc_tensor_t* a, const lmlc_tensor_t* b, lmlc_tensor_t* out) {
-    // TODO: batched matmul (ndim > 2)
-    // TODO: broadcasting for batch dims
-    // TODO: cross-dtype support
-    if (!a || !b || !out || !a->data || !b->data || !out->data) return;
-    if (a->ndim != 2 || b->ndim != 2 || out->ndim != 2) return;
-    if (a->shape[1] != b->shape[0]) return;
-    if (out->shape[0] != a->shape[0] || out->shape[1] != b->shape[1]) return;
-    if (a->dtype != b->dtype || a->dtype != out->dtype) return;
+    if (!a || !b || !out || !a->data || !b->data || !out->data) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor or data");
+        return;
+    }
+    if (a->ndim < 2 || b->ndim < 2 || out->ndim < 2) {
+        LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "matmul requires ndim >= 2");
+        return;
+    }
 
-    int64_t M = a->shape[0];
-    int64_t K = a->shape[1];
-    int64_t N = b->shape[1];
+    int a_batch = a->ndim - 2;
+    int b_batch = b->ndim - 2;
+    int max_batch = a_batch > b_batch ? a_batch : b_batch;
+    int out_ndim = max_batch + 2;
 
-    for (int64_t i = 0; i < M; i++) {
-        for (int64_t j = 0; j < N; j++) {
-            float sum = 0.0f;
-            for (int64_t k = 0; k < K; k++) {
-                size_t a_off = (size_t)i * (size_t)a->strides[0] + (size_t)k * (size_t)a->strides[1];
-                size_t b_off = (size_t)k * (size_t)b->strides[0] + (size_t)j * (size_t)b->strides[1];
-                sum += tensor_get_flat(a, a_off) * tensor_get_flat(b, b_off);
+    if (out->ndim != out_ndim) {
+        LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "out ndim does not match broadcasted batch");
+        return;
+    }
+
+    // check batch dims are broadcastable
+    int64_t batch_shape[8];
+    for (int i = 0; i < max_batch; i++) {
+        int64_t da = (i < max_batch - a_batch) ? 1 : a->shape[i - (max_batch - a_batch)];
+        int64_t db = (i < max_batch - b_batch) ? 1 : b->shape[i - (max_batch - b_batch)];
+        if (da != db && da != 1 && db != 1) {
+            LMLC_SET_ERROR(LMLC_ERR_BROADCAST_FAILED, "batch dims cannot broadcast");
+            return;
+        }
+        batch_shape[i] = da > db ? da : db;
+        if (out->shape[i] != batch_shape[i]) {
+            LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "out batch shape mismatch");
+            return;
+        }
+    }
+
+    int64_t M = a->shape[a->ndim - 2];
+    int64_t K = a->shape[a->ndim - 1];
+    int64_t K2 = b->shape[b->ndim - 2];
+    int64_t N = b->shape[b->ndim - 1];
+
+    if (K != K2) {
+        LMLC_SET_ERROR(LMLC_ERR_MATMUL_DIM, "a cols != b rows");
+        return;
+    }
+    if (out->shape[out_ndim - 2] != M || out->shape[out_ndim - 1] != N) {
+        LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "out shape must be [batch..., M, N]");
+        return;
+    }
+
+    // compute total batch count
+    size_t batch_count = 1;
+    for (int i = 0; i < max_batch; i++) batch_count *= (size_t)batch_shape[i];
+
+    // compute batch strides (in elements, not bytes)
+    size_t a_batch_stride = (size_t)M * (size_t)K;
+    size_t b_batch_stride = (size_t)K * (size_t)N;
+    size_t o_batch_stride = (size_t)M * (size_t)N;
+
+    int64_t bidx[8] = {0};
+    for (size_t bi = 0; bi < batch_count; bi++) {
+        // compute a and b batch offsets
+        size_t a_off_base = 0, b_off_base = 0;
+        int a_dim_off = max_batch - a_batch;
+        int b_dim_off = max_batch - b_batch;
+        for (int i = 0; i < a_batch; i++) {
+            int64_t idx = bidx[i + a_dim_off];
+            if (a->shape[i] == 1) idx = 0;
+            a_off_base += (size_t)idx * a_batch_stride;
+        }
+        for (int i = 0; i < b_batch; i++) {
+            int64_t idx = bidx[i + b_dim_off];
+            if (b->shape[i] == 1) idx = 0;
+            b_off_base += (size_t)idx * b_batch_stride;
+        }
+        size_t o_off_base = bi * o_batch_stride;
+
+        for (int64_t i = 0; i < M; i++) {
+            for (int64_t j = 0; j < N; j++) {
+                float sum = 0.0f;
+                for (int64_t k = 0; k < K; k++) {
+                    size_t a_off = a_off_base + (size_t)i * (size_t)K + (size_t)k;
+                    size_t b_off = b_off_base + (size_t)k * (size_t)N + (size_t)j;
+                    sum += tensor_get_flat(a, a_off) * tensor_get_flat(b, b_off);
+                }
+                tensor_set_flat(out, o_off_base + (size_t)i * (size_t)N + (size_t)j, sum);
             }
-            size_t o_off = (size_t)i * (size_t)out->strides[0] + (size_t)j * (size_t)out->strides[1];
-            tensor_set_flat(out, o_off, sum);
+        }
+
+        // increment batch index
+        for (int d = max_batch - 1; d >= 0; d--) {
+            if (++bidx[d] < batch_shape[d]) break;
+            bidx[d] = 0;
         }
     }
 }
 
 float lmlc_tensor_dot(const lmlc_tensor_t* a, const lmlc_tensor_t* b) {
-    // TODO: cross-dtype support
-    if (!a || !b || !a->data || !b->data) return 0.0f;
-    if (a->count != b->count) return 0.0f;
-    if (a->dtype != b->dtype) return 0.0f;
+    if (!a || !b || !a->data || !b->data) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor or data");
+        return 0.0f;
+    }
+    if (a->count != b->count) {
+        LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "a and b count mismatch");
+        return 0.0f;
+    }
 
     float sum = 0.0f;
     for (size_t i = 0; i < a->count; i++) {
@@ -339,7 +513,10 @@ float lmlc_tensor_dot(const lmlc_tensor_t* a, const lmlc_tensor_t* b) {
 }
 
 float lmlc_tensor_norm(const lmlc_tensor_t* t) {
-    if (!t || !t->data) return 0.0f;
+    if (!t || !t->data) {
+        LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor or data");
+        return 0.0f;
+    }
     float sum = 0.0f;
     for (size_t i = 0; i < t->count; i++) {
         float v = tensor_get_flat(t, i);
@@ -351,19 +528,26 @@ float lmlc_tensor_norm(const lmlc_tensor_t* t) {
 // ---- shape ops ----
 
 void lmlc_tensor_reshape(lmlc_tensor_t* t, int ndim, const int64_t* shape) {
-    // TODO: error reporting instead of silent return
-    if (!t) return;
+    if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return; }
+    if (!shape) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null shape"); return; }
+    if (ndim <= 0 || ndim > 8) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..8"); return; }
     size_t new_count = 1;
-    for (int i = 0; i < ndim; i++) new_count *= (size_t)shape[i];
-    if (new_count != t->count) return;
+    for (int i = 0; i < ndim; i++) {
+        if (shape[i] <= 0) { LMLC_SET_ERROR(LMLC_ERR_INVALID_SHAPE, "shape dim must be > 0"); return; }
+        new_count *= (size_t)shape[i];
+    }
+    if (new_count != t->count) { LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "reshape count mismatch"); return; }
     t->ndim = ndim;
     for (int i = 0; i < ndim; i++) t->shape[i] = shape[i];
     compute_strides(t);
 }
 
 void lmlc_tensor_transpose(lmlc_tensor_t* t, int dim0, int dim1) {
-    // TODO: bounds check dim0, dim1
-    if (!t || dim0 < 0 || dim1 < 0 || dim0 >= t->ndim || dim1 >= t->ndim) return;
+    if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return; }
+    if (dim0 < 0 || dim1 < 0 || dim0 >= t->ndim || dim1 >= t->ndim) {
+        LMLC_SET_ERROR(LMLC_ERR_OUT_OF_BOUNDS, "transpose dim out of bounds");
+        return;
+    }
     int64_t tmp = t->shape[dim0];
     t->shape[dim0] = t->shape[dim1];
     t->shape[dim1] = tmp;
@@ -373,8 +557,21 @@ void lmlc_tensor_transpose(lmlc_tensor_t* t, int dim0, int dim1) {
 }
 
 void lmlc_tensor_permute(lmlc_tensor_t* t, const int* perm) {
-    // TODO: validate perm is a valid permutation
-    if (!t || !perm) return;
+    if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return; }
+    if (!perm) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null perm"); return; }
+    // validate permutation
+    int seen[8] = {0};
+    for (int i = 0; i < t->ndim; i++) {
+        if (perm[i] < 0 || perm[i] >= t->ndim) {
+            LMLC_SET_ERROR(LMLC_ERR_INVALID_PERM, "perm index out of bounds");
+            return;
+        }
+        if (seen[perm[i]]) {
+            LMLC_SET_ERROR(LMLC_ERR_INVALID_PERM, "perm is not a valid permutation");
+            return;
+        }
+        seen[perm[i]] = 1;
+    }
     int64_t new_shape[8], new_strides[8];
     for (int i = 0; i < t->ndim; i++) {
         new_shape[i] = t->shape[perm[i]];
@@ -387,8 +584,9 @@ void lmlc_tensor_permute(lmlc_tensor_t* t, const int* perm) {
 }
 
 void lmlc_tensor_squeeze(lmlc_tensor_t* t, int dim) {
-    // TODO: check shape[dim] == 1
-    if (!t || dim < 0 || dim >= t->ndim || t->shape[dim] != 1) return;
+    if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return; }
+    if (dim < 0 || dim >= t->ndim) { LMLC_SET_ERROR(LMLC_ERR_OUT_OF_BOUNDS, "squeeze dim out of bounds"); return; }
+    if (t->shape[dim] != 1) { LMLC_SET_ERROR(LMLC_ERR_INVALID_SHAPE, "squeeze dim must be size 1"); return; }
     for (int i = dim; i < t->ndim - 1; i++) {
         t->shape[i] = t->shape[i + 1];
         t->strides[i] = t->strides[i + 1];
@@ -397,8 +595,9 @@ void lmlc_tensor_squeeze(lmlc_tensor_t* t, int dim) {
 }
 
 void lmlc_tensor_unsqueeze(lmlc_tensor_t* t, int dim) {
-    // TODO: check ndim < 8
-    if (!t || dim < 0 || dim > t->ndim || t->ndim >= 8) return;
+    if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return; }
+    if (dim < 0 || dim > t->ndim) { LMLC_SET_ERROR(LMLC_ERR_OUT_OF_BOUNDS, "unsqueeze dim out of bounds"); return; }
+    if (t->ndim >= 8) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim would exceed 8"); return; }
     for (int i = t->ndim; i > dim; i--) {
         t->shape[i] = t->shape[i - 1];
         t->strides[i] = t->strides[i - 1];
@@ -409,17 +608,23 @@ void lmlc_tensor_unsqueeze(lmlc_tensor_t* t, int dim) {
 }
 
 lmlc_tensor_t* lmlc_tensor_view(lmlc_tensor_t* t, int ndim, const int64_t* shape) {
-    // TODO: check new count == old count
-    if (!t) return NULL;
+    if (!t) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null tensor"); return NULL; }
+    if (!shape) { LMLC_SET_ERROR(LMLC_ERR_NULL, "null shape"); return NULL; }
+    if (ndim <= 0 || ndim > 8) { LMLC_SET_ERROR(LMLC_ERR_INVALID_NDIM, "ndim must be 1..8"); return NULL; }
+
+    size_t new_count = 1;
+    for (int i = 0; i < ndim; i++) {
+        if (shape[i] <= 0) { LMLC_SET_ERROR(LMLC_ERR_INVALID_SHAPE, "shape dim must be > 0"); return NULL; }
+        new_count *= (size_t)shape[i];
+    }
+    if (new_count != t->count) { LMLC_SET_ERROR(LMLC_ERR_SHAPE_MISMATCH, "view count mismatch"); return NULL; }
+
     lmlc_tensor_t* v = (lmlc_tensor_t*)calloc(1, sizeof(lmlc_tensor_t));
-    if (!v) return NULL;
+    if (!v) { LMLC_SET_ERROR(LMLC_ERR_ALLOC_FAILED, "calloc view struct"); return NULL; }
     v->ndim = ndim;
     v->dtype = t->dtype;
-    v->count = 1;
-    for (int i = 0; i < ndim; i++) {
-        v->shape[i] = shape[i];
-        v->count *= (size_t)shape[i];
-    }
+    v->count = new_count;
+    for (int i = 0; i < ndim; i++) v->shape[i] = shape[i];
     compute_strides(v);
     v->data = t->data;
     v->owns_data = 0;
