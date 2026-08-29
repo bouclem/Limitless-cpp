@@ -19,7 +19,9 @@ lmlc_cgraph_t* lmlc_graph_create(int capacity) {
 
 void lmlc_graph_free(lmlc_cgraph_t* g) {
     if (!g) return;
-    // TODO: should we free tensors? For now, caller owns tensors.
+    // Graph does not own tensors — caller is responsible for freeing them.
+    // This matches GGML's design: tensors can be shared across graphs and
+    // reused across forward passes.
     free(g->nodes);
     free(g);
 }
@@ -75,6 +77,79 @@ void lmlc_graph_add_matmul(lmlc_cgraph_t* g,
     n->dst = dst;
 }
 
+void lmlc_graph_add_reshape(lmlc_cgraph_t* g,
+                            lmlc_tensor_t* src, int ndim, const int64_t* shape) {
+    if (!g) return;
+    if (!graph_ensure_capacity(g)) return;
+    lmlc_cnode_t* n = &g->nodes[g->n_nodes++];
+    memset(n, 0, sizeof(*n));
+    n->op = LMLC_OP_RESHAPE;
+    n->src[0] = src;
+    n->ndim = ndim;
+    for (int i = 0; i < ndim && i < LMLC_MAX_NDIM; i++) n->shape[i] = shape[i];
+}
+
+void lmlc_graph_add_transpose(lmlc_cgraph_t* g,
+                              lmlc_tensor_t* src, int dim0, int dim1) {
+    if (!g) return;
+    if (!graph_ensure_capacity(g)) return;
+    lmlc_cnode_t* n = &g->nodes[g->n_nodes++];
+    memset(n, 0, sizeof(*n));
+    n->op = LMLC_OP_TRANSPOSE;
+    n->src[0] = src;
+    n->dim0 = dim0;
+    n->dim1 = dim1;
+}
+
+void lmlc_graph_add_permute(lmlc_cgraph_t* g,
+                            lmlc_tensor_t* src, const int* perm) {
+    if (!g || !perm) return;
+    if (!graph_ensure_capacity(g)) return;
+    lmlc_cnode_t* n = &g->nodes[g->n_nodes++];
+    memset(n, 0, sizeof(*n));
+    n->op = LMLC_OP_PERMUTE;
+    n->src[0] = src;
+    if (src) {
+        for (int i = 0; i < src->ndim; i++) n->perm[i] = perm[i];
+    }
+}
+
+void lmlc_graph_add_squeeze(lmlc_cgraph_t* g,
+                            lmlc_tensor_t* src, int dim) {
+    if (!g) return;
+    if (!graph_ensure_capacity(g)) return;
+    lmlc_cnode_t* n = &g->nodes[g->n_nodes++];
+    memset(n, 0, sizeof(*n));
+    n->op = LMLC_OP_SQUEEZE;
+    n->src[0] = src;
+    n->dim0 = dim;
+}
+
+void lmlc_graph_add_unsqueeze(lmlc_cgraph_t* g,
+                              lmlc_tensor_t* src, int dim) {
+    if (!g) return;
+    if (!graph_ensure_capacity(g)) return;
+    lmlc_cnode_t* n = &g->nodes[g->n_nodes++];
+    memset(n, 0, sizeof(*n));
+    n->op = LMLC_OP_UNSQUEEZE;
+    n->src[0] = src;
+    n->dim0 = dim;
+}
+
+void lmlc_graph_add_view(lmlc_cgraph_t* g,
+                         lmlc_tensor_t* src, int ndim, const int64_t* shape,
+                         lmlc_tensor_t* dst) {
+    if (!g) return;
+    if (!graph_ensure_capacity(g)) return;
+    lmlc_cnode_t* n = &g->nodes[g->n_nodes++];
+    memset(n, 0, sizeof(*n));
+    n->op = LMLC_OP_VIEW;
+    n->src[0] = src;
+    n->dst = dst;
+    n->ndim = ndim;
+    for (int i = 0; i < ndim && i < LMLC_MAX_NDIM; i++) n->shape[i] = shape[i];
+}
+
 // ---- execute ----
 
 void lmlc_graph_forward(lmlc_cgraph_t* g) {
@@ -98,16 +173,85 @@ void lmlc_graph_forward(lmlc_cgraph_t* g) {
             case LMLC_OP_MATMUL:
                 lmlc_tensor_matmul(n->src[0], n->src[1], n->dst);
                 break;
-            // TODO: implement remaining ops in forward pass
-            // case LMLC_OP_DOT:
-            // case LMLC_OP_NORM:
-            // case LMLC_OP_RESHAPE:
-            // case LMLC_OP_TRANSPOSE:
-            // case LMLC_OP_PERMUTE:
-            // case LMLC_OP_SQUEEZE:
-            // case LMLC_OP_UNSQUEEZE:
-            // case LMLC_OP_VIEW:
+            case LMLC_OP_RESHAPE:
+                lmlc_tensor_reshape(n->src[0], n->ndim, n->shape);
+                break;
+            case LMLC_OP_TRANSPOSE:
+                lmlc_tensor_transpose(n->src[0], n->dim0, n->dim1);
+                break;
+            case LMLC_OP_PERMUTE:
+                lmlc_tensor_permute(n->src[0], n->perm);
+                break;
+            case LMLC_OP_SQUEEZE:
+                lmlc_tensor_squeeze(n->src[0], n->dim0);
+                break;
+            case LMLC_OP_UNSQUEEZE:
+                lmlc_tensor_unsqueeze(n->src[0], n->dim0);
+                break;
+            case LMLC_OP_VIEW:
+                // view creates a new tensor — caller should pre-allocate dst
+                // or we create it here
+                // TODO: automatic dst allocation for view
+                break;
             default:
+                break;
+        }
+    }
+}
+
+// ---- backward ----
+
+// Backward pass: iterate nodes in reverse, accumulate gradients.
+// For each node, grad_dst must be set (either seeded by caller for the last
+// node, or accumulated from downstream nodes). We compute grad_src from grad_dst.
+//
+// Gradient rules:
+//   add:   dL/da = dL/dy, dL/db = dL/dy  (with broadcasting reduction)
+//   mul:   dL/da = dL/dy * b, dL/db = dL/dy * a
+//   scale: dL/da = dL/dy * scalar
+//   matmul: dL/dA = dL/dY @ B^T, dL/dB = A^T @ dL/dY
+//
+// TODO: gradient accumulation across multiple uses of same tensor
+// TODO: broadcasting reduction in add/mul gradients
+// TODO: shape op gradients (reshape, transpose, permute are identity for data)
+
+void lmlc_graph_backward(lmlc_cgraph_t* g) {
+    if (!g) return;
+    for (int i = g->n_nodes - 1; i >= 0; i--) {
+        lmlc_cnode_t* n = &g->nodes[i];
+        if (!n->grad_dst) continue;
+
+        switch (n->op) {
+            case LMLC_OP_ADD:
+                // dL/da = dL/dy, dL/db = dL/dy
+                if (n->grad_src[0])
+                    lmlc_tensor_add(n->grad_dst, n->grad_src[0], n->grad_src[0]);
+                if (n->grad_src[1])
+                    lmlc_tensor_add(n->grad_dst, n->grad_src[1], n->grad_src[1]);
+                break;
+            case LMLC_OP_MUL:
+                // dL/da = dL/dy * b, dL/db = dL/dy * a
+                if (n->grad_src[0] && n->src[1])
+                    lmlc_tensor_mul(n->grad_dst, n->src[1], n->grad_src[0]);
+                if (n->grad_src[1] && n->src[0])
+                    lmlc_tensor_mul(n->grad_dst, n->src[0], n->grad_src[1]);
+                break;
+            case LMLC_OP_SCALE:
+                // dL/da = dL/dy * scalar
+                if (n->grad_src[0])
+                    lmlc_tensor_scale(n->grad_dst, n->scalar, n->grad_src[0]);
+                break;
+            case LMLC_OP_MATMUL:
+                // dL/dA = dL/dY @ B^T, dL/dB = A^T @ dL/dY
+                // TODO: implement transpose + matmul for gradient
+                // For now, only works with 2D matmul (no batch)
+                // TODO: batched matmul backward
+                break;
+            default:
+                // Shape ops: gradient flows through unchanged (data isn't moved,
+                // only metadata). For in-place shape ops, grad_src = grad_dst.
+                if (n->grad_src[0])
+                    lmlc_tensor_add(n->grad_dst, n->grad_src[0], n->grad_src[0]);
                 break;
         }
     }

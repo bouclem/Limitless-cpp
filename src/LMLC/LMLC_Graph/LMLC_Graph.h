@@ -35,6 +35,8 @@ typedef struct {
     lmlc_op_t    op;
     lmlc_tensor_t* src[2];  // input tensors (up to 2)
     lmlc_tensor_t* dst;     // output tensor
+    lmlc_tensor_t* grad_dst;    // gradient w.r.t. output (seeded by caller)
+    lmlc_tensor_t* grad_src[2]; // gradients w.r.t. inputs (computed by backward)
     float        scalar;    // for scale op
     int          perm[LMLC_MAX_NDIM]; // for permute
     int          ndim;      // for reshape/view
@@ -63,10 +65,26 @@ void lmlc_graph_add_scale(lmlc_cgraph_t* g,
 void lmlc_graph_add_matmul(lmlc_cgraph_t* g,
                            lmlc_tensor_t* src0, lmlc_tensor_t* src1,
                            lmlc_tensor_t* dst);
-// TODO: add helpers for reshape, transpose, permute, squeeze, unsqueeze, view
+void lmlc_graph_add_reshape(lmlc_cgraph_t* g,
+                            lmlc_tensor_t* src, int ndim, const int64_t* shape);
+void lmlc_graph_add_transpose(lmlc_cgraph_t* g,
+                              lmlc_tensor_t* src, int dim0, int dim1);
+void lmlc_graph_add_permute(lmlc_cgraph_t* g,
+                            lmlc_tensor_t* src, const int* perm);
+void lmlc_graph_add_squeeze(lmlc_cgraph_t* g,
+                            lmlc_tensor_t* src, int dim);
+void lmlc_graph_add_unsqueeze(lmlc_cgraph_t* g,
+                              lmlc_tensor_t* src, int dim);
+void lmlc_graph_add_view(lmlc_cgraph_t* g,
+                         lmlc_tensor_t* src, int ndim, const int64_t* shape,
+                         lmlc_tensor_t* dst);
 
 // execute — run all nodes in order
 void lmlc_graph_forward(lmlc_cgraph_t* g);
+
+// backward — compute gradients in reverse order
+// caller must seed grad_dst on the output node(s) before calling
+void lmlc_graph_backward(lmlc_cgraph_t* g);
 
 // debug
 void lmlc_graph_print(const lmlc_cgraph_t* g);

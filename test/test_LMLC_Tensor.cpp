@@ -569,6 +569,140 @@ static void test_cross_dtype_int_to_f32(void) {
     END_TEST;
 }
 
+static void test_graph_backward_add(void) {
+    TEST("graph_backward_add");
+    // y = a + b, dy = [1,1,1] => da = [1,1,1], db = [1,1,1]
+    int64_t shape[] = {3};
+    lmlc_tensor_t* a = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* b = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* y = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* ga = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* gb = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* gy = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+
+    lmlc_tensor_fill(a, 2.0f);
+    lmlc_tensor_fill(b, 3.0f);
+    lmlc_tensor_fill(gy, 1.0f); // seed gradient
+
+    lmlc_cgraph_t* g = lmlc_graph_create(4);
+    lmlc_graph_add_binary(g, LMLC_OP_ADD, a, b, y);
+    g->nodes[0].grad_dst = gy;
+    g->nodes[0].grad_src[0] = ga;
+    g->nodes[0].grad_src[1] = gb;
+
+    lmlc_graph_forward(g);
+    lmlc_graph_backward(g);
+
+    int64_t idx[] = {0};
+    ASSERT_F32(lmlc_tensor_get(y, idx), 5.0f, 1e-5f);
+    ASSERT_F32(lmlc_tensor_get(ga, idx), 1.0f, 1e-5f);
+    ASSERT_F32(lmlc_tensor_get(gb, idx), 1.0f, 1e-5f);
+
+    lmlc_graph_free(g);
+    lmlc_tensor_free(a); lmlc_tensor_free(b); lmlc_tensor_free(y);
+    lmlc_tensor_free(ga); lmlc_tensor_free(gb); lmlc_tensor_free(gy);
+    END_TEST;
+}
+
+static void test_graph_backward_mul(void) {
+    TEST("graph_backward_mul");
+    // y = a * b, dy = [1,1,1] => da = b = [3,3,3], db = a = [2,2,2]
+    int64_t shape[] = {3};
+    lmlc_tensor_t* a = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* b = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* y = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* ga = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* gb = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* gy = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+
+    lmlc_tensor_fill(a, 2.0f);
+    lmlc_tensor_fill(b, 3.0f);
+    lmlc_tensor_fill(gy, 1.0f);
+
+    lmlc_cgraph_t* g = lmlc_graph_create(4);
+    lmlc_graph_add_binary(g, LMLC_OP_MUL, a, b, y);
+    g->nodes[0].grad_dst = gy;
+    g->nodes[0].grad_src[0] = ga;
+    g->nodes[0].grad_src[1] = gb;
+
+    lmlc_graph_forward(g);
+    lmlc_graph_backward(g);
+
+    int64_t idx[] = {1};
+    ASSERT_F32(lmlc_tensor_get(y, idx), 6.0f, 1e-5f);
+    ASSERT_F32(lmlc_tensor_get(ga, idx), 3.0f, 1e-5f);
+    ASSERT_F32(lmlc_tensor_get(gb, idx), 2.0f, 1e-5f);
+
+    lmlc_graph_free(g);
+    lmlc_tensor_free(a); lmlc_tensor_free(b); lmlc_tensor_free(y);
+    lmlc_tensor_free(ga); lmlc_tensor_free(gb); lmlc_tensor_free(gy);
+    END_TEST;
+}
+
+static void test_graph_backward_scale(void) {
+    TEST("graph_backward_scale");
+    // y = a * 2.0, dy = [1,1] => da = [2.0, 2.0]
+    int64_t shape[] = {2};
+    lmlc_tensor_t* a = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* y = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* ga = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_t* gy = lmlc_tensor_create(1, shape, LMLC_DTYPE_F32);
+
+    lmlc_tensor_fill(a, 5.0f);
+    lmlc_tensor_fill(gy, 1.0f);
+
+    lmlc_cgraph_t* g = lmlc_graph_create(4);
+    lmlc_graph_add_scale(g, a, 2.0f, y);
+    g->nodes[0].grad_dst = gy;
+    g->nodes[0].grad_src[0] = ga;
+
+    lmlc_graph_forward(g);
+    lmlc_graph_backward(g);
+
+    int64_t idx[] = {0};
+    ASSERT_F32(lmlc_tensor_get(y, idx), 10.0f, 1e-5f);
+    ASSERT_F32(lmlc_tensor_get(ga, idx), 2.0f, 1e-5f);
+
+    lmlc_graph_free(g);
+    lmlc_tensor_free(a); lmlc_tensor_free(y);
+    lmlc_tensor_free(ga); lmlc_tensor_free(gy);
+    END_TEST;
+}
+
+static void test_graph_helpers(void) {
+    TEST("graph_helpers");
+    int64_t shape[] = {2, 3};
+    lmlc_tensor_t* t = lmlc_tensor_create(2, shape, LMLC_DTYPE_F32);
+    lmlc_tensor_fill(t, 1.0f);
+
+    lmlc_cgraph_t* g = lmlc_graph_create(8);
+
+    // reshape to [6]
+    int64_t rshape[] = {6};
+    lmlc_graph_add_reshape(g, t, 1, rshape);
+    // transpose
+    lmlc_graph_add_transpose(g, t, 0, 1);
+    // permute
+    int perm[] = {1, 0};
+    lmlc_graph_add_permute(g, t, perm);
+    // squeeze (no size-1 dim, should error but not crash)
+    lmlc_graph_add_squeeze(g, t, 0);
+    // unsqueeze
+    lmlc_graph_add_unsqueeze(g, t, 0);
+
+    ASSERT(g->n_nodes == 5, "should have 5 nodes");
+
+    // forward should execute without crash
+    lmlc_graph_forward(g);
+
+    // after reshape to [6] then unsqueeze at dim 0, t should be 2D [1, 6]
+    ASSERT(t->ndim == 2, "t should be 2d after reshape+unsqueeze");
+
+    lmlc_graph_free(g);
+    lmlc_tensor_free(t);
+    END_TEST;
+}
+
 int main(void) {
     printf("=== LMLC_Tensor Tests ===\n\n");
 
@@ -600,6 +734,10 @@ int main(void) {
     test_graph_matmul();
     test_integer_dtypes();
     test_cross_dtype_int_to_f32();
+    test_graph_backward_add();
+    test_graph_backward_mul();
+    test_graph_backward_scale();
+    test_graph_helpers();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

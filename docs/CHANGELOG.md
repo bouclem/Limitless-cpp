@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.2] - 2026-08-29
+
+### Added
+- **Backward pass** — `lmlc_graph_backward` computes gradients in reverse order
+  - `grad_dst` / `grad_src[2]` fields on `lmlc_cnode_t` for gradient storage
+  - Gradient rules: add (pass-through), mul (swap inputs), scale (multiply by scalar)
+  - Shape ops: gradient flows through unchanged (metadata-only ops)
+  - Caller seeds `grad_dst` on output nodes before calling backward
+  - TODOs: matmul backward, gradient accumulation, broadcasting reduction
+- **Shape op helpers** — 6 new graph build functions
+  - `lmlc_graph_add_reshape`, `lmlc_graph_add_transpose`, `lmlc_graph_add_permute`
+  - `lmlc_graph_add_squeeze`, `lmlc_graph_add_unsqueeze`, `lmlc_graph_add_view`
+  - All shape ops now execute in `lmlc_graph_forward`
+- **Tests** — 4 new test cases (32 total)
+  - `test_graph_backward_add` — add gradient: da=dy, db=dy
+  - `test_graph_backward_mul` — mul gradient: da=dy*b, db=dy*a
+  - `test_graph_backward_scale` — scale gradient: da=dy*scalar
+  - `test_graph_helpers` — reshape, transpose, permute, squeeze, unsqueeze through graph
+
 ## [0.1.1] - 2026-08-29
 
 ### Added

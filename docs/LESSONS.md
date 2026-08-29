@@ -59,15 +59,27 @@ Cumulative mistakes, patterns, and insights from building LMLC.
 - Warning flags: `-Wall -Wextra -Wpedantic` (GCC/Clang), `/W4` (MSVC).
 - Debug build by default — switch to Release for performance testing.
 - Build: `cmake -B build -S . && cmake --build build --config Debug`
-- Test: `.\build\src\LMLC\LMLC_Tensor\test\Debug\test_lmlc_tensor.exe`
+- Test: `.\build\test\Debug\test_lmlc_tensor.exe` (moved to root `test/` in v0.1.1)
 
-## F16 Conversion
+## Dynamic Arrays: realloc Failure Handling (v0.1.0)
 
-- IEEE 754 half-precision: 1 sign + 5 exponent + 10 mantissa bits.
-- Round-to-nearest-even is important for accuracy — simple truncation loses too much precision.
-- Subnormals need special handling (exp <= 0): shift mantissa, round, no implicit leading 1.
-- Overflow (exp >= 0x1F) saturates to infinity.
-- Inf/NaN: exp == 0xFF in f32 → exp == 0x1F in f16, preserve NaN payload bit.
+- `realloc` returns NULL on failure but **the original pointer is still valid**.
+- Naive `t->shape = realloc(t->shape, ...)` leaks the old buffer on failure.
+- Fix: save return to temp, only assign if non-NULL.
+
+## In-Place Shape Ops Break Graph DAGs (v0.1.2)
+
+- `reshape`/`transpose`/`squeeze`/`unsqueeze` modify the source tensor in-place.
+- In a linear graph chain this works — each node sees the result of the previous.
+- In a DAG, an earlier shape op changes the tensor for **all** downstream nodes, not just the intended one.
+- Pattern: shape ops in a compute graph should produce a new tensor, not mutate in-place. (TODO for later.)
+
+## Tracing Test Assertions (v0.1.2)
+
+- Wrote `ASSERT(t->ndim == 3)` without tracing the actual op sequence.
+- The ops were: reshape (2D→1D), transpose (fail, 1D), permute (fail, 1D), squeeze (fail, 1D), unsqueeze (1D→2D).
+- Correct answer was 2, not 3. Test failed.
+- Lesson: trace through the op chain before writing assertions.
 
 ## What Not To Do
 
